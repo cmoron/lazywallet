@@ -1,0 +1,58 @@
+[package]
+name = "lazywallet"
+version = "0.1.0"
+edition = "2021"  # Edition Rust 2021 (la plus récente stable)
+
+[dependencies]
+# === Runtime asynchrone ===
+# Tokio : runtime pour exécuter du code async (non-bloquant)
+# Features "full" : active toutes les fonctionnalités (macros, time, io, etc.)
+tokio = { version = "1.35", features = ["full"] }
+
+# === Appels HTTP ===
+# Reqwest : client HTTP pour appeler les APIs
+# Feature "json" : parsing automatique des réponses JSON
+reqwest = { version = "0.11", features = ["json"] }
+
+# === Sérialisation / Désérialisation ===
+# Serde : framework pour convertir structures Rust <-> JSON/autres formats
+# Feature "derive" : permet d'utiliser #[derive(Serialize, Deserialize)]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"  # Implémentation JSON pour serde
+
+# === Gestion des dates ===
+# Chrono : manipulation de dates et timestamps
+# Feature "serde" : permet de sérialiser/désérialiser les dates
+chrono = { version = "0.4", features = ["serde"] }
+
+# === Gestion d'erreurs ===
+# Anyhow : error handling ergonomique avec contexte
+# Permet d'utiliser Result<T, anyhow::Error> facilement
+anyhow = "1.0"
+
+# === Logging ===
+# Tracing : framework de logging structuré moderne
+# Meilleur que log crate pour le code async/tokio
+tracing = "0.1"
+
+# Tracing-subscriber : configure la sortie des logs
+# Feature "env-filter" : filtre les logs via variable d'environnement RUST_LOG
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Tracing-appender : rotation automatique des fichiers de logs
+# Crée des fichiers logs quotidiens/horaires automatiquement
+tracing-appender = "0.2"
+
+# Dirs : chemins de répertoires cross-platform
+# Utilisé pour trouver le bon emplacement des logs (~/.local/share/ sur Linux)
+dirs = "5.0"
+
+# === Interface TUI (Terminal User Interface) ===
+# Ratatui : framework moderne pour créer des interfaces dans le terminal
+# Permet de créer des widgets (listes, graphiques, tableaux, etc.)
+ratatui = "0.26"
+
+# Crossterm : backend pour gérer le terminal (input/output)
+# Gère le raw mode, les événements clavier, les couleurs, etc.
+# Compatible multi-plateformes (Linux, macOS, Windows)
+crossterm = "0.27"
