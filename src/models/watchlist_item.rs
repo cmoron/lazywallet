@@ -91,6 +91,8 @@ impl WatchlistItem {
     /// CONCEPT RUST : String building
     /// - format! pour créer des strings formatées
     /// - match pour gérer les Option
+    ///
+    /// Note : Le nom est tronqué à 20 caractères pour éviter le débordement
     pub fn display(&self) -> String {
         // Prix
         let price_str = match self.current_price() {
@@ -107,9 +109,17 @@ impl WatchlistItem {
             None => String::new(),
         };
 
+        // Tronque le nom à 20 caractères avec ellipse si nécessaire
+        let truncated_name = if self.name.chars().count() <= 20 {
+            self.name.clone()
+        } else {
+            let truncated: String = self.name.chars().take(19).collect();
+            format!("{}…", truncated)
+        };
+
         format!(
             "{:<8} {:<20} {:>12}  {}",
-            self.symbol, self.name, price_str, change_str
+            self.symbol, truncated_name, price_str, change_str
         )
     }
 

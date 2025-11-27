@@ -163,6 +163,33 @@ fn render_header(frame: &mut Frame, area: Rect) {
 // Main Content : Contenu principal
 // ============================================================================
 
+/// Tronque un texte à une longueur maximale avec ellipse
+///
+/// CONCEPT RUST : Unicode handling
+/// - .chars() compte les caractères Unicode, pas les bytes
+/// - Gère correctement les caractères multi-bytes (emojis, accents, etc.)
+///
+/// # Arguments
+/// * `text` - Texte à tronquer
+/// * `max_len` - Longueur maximale (inclut l'ellipse si tronqué)
+///
+/// # Retourne
+/// * String tronquée avec "…" si elle dépasse max_len, sinon texte original
+///
+/// # Exemple
+/// ```
+/// truncate_with_ellipsis("Microsoft Corporation", 20) // "Microsoft Corporat…"
+/// truncate_with_ellipsis("Apple Inc.", 20)            // "Apple Inc."
+/// ```
+fn truncate_with_ellipsis(text: &str, max_len: usize) -> String {
+    if text.chars().count() <= max_len {
+        text.to_string()
+    } else {
+        let truncated: String = text.chars().take(max_len.saturating_sub(1)).collect();
+        format!("{}…", truncated)
+    }
+}
+
 /// Dessine le contenu principal : la watchlist
 ///
 /// CONCEPT RATATUI : List widget
@@ -232,13 +259,17 @@ fn render_main_content(frame: &mut Frame, app: &App, area: Rect) {
                     })
                     .unwrap_or_else(|| String::new());
 
+                // Tronque le nom à 20 caractères pour éviter le débordement
+                let truncated_name = truncate_with_ellipsis(&item.name, 20);
                 format!(
                     " {:<8} {:<20} {:>12}  {}",
-                    item.symbol, item.name, price_str, change_str
+                    item.symbol, truncated_name, price_str, change_str
                 )
             } else {
                 // Pas de données : affiche "Loading..."
-                format!(" {:<8} {:<20} {:>12}", item.symbol, item.name, "Loading...")
+                // Tronque le nom à 20 caractères pour cohérence
+                let truncated_name = truncate_with_ellipsis(&item.name, 20);
+                format!(" {:<8} {:<20} {:>12}", item.symbol, truncated_name, "Loading...")
             };
 
             // Crée un ListItem avec style
