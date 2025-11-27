@@ -281,12 +281,14 @@ async fn load_watchlist_data() -> Result<Vec<WatchlistItem>> {
         // Utilise l'intervalle par défaut (30m)
         // Le timeframe est déterminé automatiquement par l'intervalle
         match fetch_ticker_data(symbol, Interval::default()).await {
-            Ok(data) => {
+            Ok((data, long_name)) => {
                 // Succès : crée un WatchlistItem avec les données
-                info!(ticker = %symbol, candles = data.len(), "Ticker data fetched successfully");
+                // Utilise le long_name de Yahoo si disponible, sinon le nom fourni
+                let display_name = long_name.unwrap_or_else(|| name.to_string());
+                info!(ticker = %symbol, candles = data.len(), long_name = %display_name, "Ticker data fetched successfully");
                 watchlist.push(WatchlistItem::with_data(
                     symbol.to_string(),
-                    name.to_string(),
+                    display_name,
                     data,
                 ));
                 println!("    ✓ OK");
@@ -374,8 +376,8 @@ fn spawn_background_worker(
                             });
 
                             match result {
-                                Ok(data) => {
-                                    info!(ticker = %symbol, interval = %interval.label(), candles = data.len(), "Data loaded successfully");
+                                Ok((data, long_name)) => {
+                                    info!(ticker = %symbol, interval = %interval.label(), candles = data.len(), long_name = ?long_name, "Data loaded successfully");
                                     let _ = result_tx.send(AppResult::TickerDataLoaded { index, data });
                                 }
                                 Err(e) => {
@@ -411,13 +413,13 @@ fn spawn_background_worker(
                             });
 
                             match result {
-                                Ok(data) => {
-                                    info!(ticker = %symbol, candles = data.len(), "Ticker added successfully");
-                                    // Pour le nom, on utilise le symbol pour l'instant
-                                    // TODO: Récupérer le nom réel depuis Yahoo Finance
+                                Ok((data, long_name)) => {
+                                    info!(ticker = %symbol, candles = data.len(), long_name = ?long_name, "Ticker added successfully");
+                                    // Utilise le long_name de Yahoo, sinon fallback sur le symbol
+                                    let name = long_name.unwrap_or_else(|| symbol.clone());
                                     let _ = result_tx.send(AppResult::TickerAdded {
                                         symbol: symbol.clone(),
-                                        name: symbol.clone(),
+                                        name,
                                         data,
                                     });
                                 }

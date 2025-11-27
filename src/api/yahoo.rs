@@ -52,6 +52,7 @@ struct ChartResult {
 #[serde(rename_all = "camelCase")]  // Convertit automatiquement snake_case -> camelCase
 struct Meta {
     symbol: String,
+    long_name: Option<String>,
     regular_market_price: Option<f64>,
     chart_previous_close: Option<f64>,
 }
@@ -92,18 +93,19 @@ struct Quote {
 /// * `timeframe` - Période de temps souhaitée
 ///
 /// # Retourne
-/// * `Result<OHLCData>` - Données OHLC ou erreur
+/// * `Result<(OHLCData, Option<String>)>` - Tuple contenant les données OHLC et le long_name du ticker
 ///
 /// # Exemple
-/// let data = fetch_ticker_data("AAPL", Interval::M30).await?;
+/// let (data, long_name) = fetch_ticker_data("AAPL", Interval::M30).await?;
 /// println!("Prix actuel : {}", data.last().unwrap().close);
+/// println!("Nom : {}", long_name.unwrap_or_else(|| "Unknown".to_string()));
 ///
 /// CONCEPT RUST : #[instrument]
 /// - Macro tracing qui ajoute automatiquement un span
 /// - Inclut les paramètres de la fonction dans les logs
 /// - Tous les logs à l'intérieur auront le contexte symbol + interval
 #[instrument(skip(interval), fields(interval = ?interval))]
-pub async fn fetch_ticker_data(symbol: &str, interval: Interval) -> Result<OHLCData> {
+pub async fn fetch_ticker_data(symbol: &str, interval: Interval) -> Result<(OHLCData, Option<String>)> {
     // Le timeframe est déterminé automatiquement selon l'intervalle
     let timeframe = interval.default_timeframe();
 
@@ -159,12 +161,12 @@ pub async fn fetch_ticker_data(symbol: &str, interval: Interval) -> Result<OHLCD
         .await
         .context("Échec du parsing JSON de la réponse Yahoo")?;
 
-    // Convertit la réponse Yahoo en notre structure OHLCData
+    // Convertit la réponse Yahoo en notre structure OHLCData et extrait le long_name
     debug!("Parsing Yahoo response to OHLCData");
-    let data = parse_yahoo_response(yahoo_response, symbol, interval, timeframe)?;
+    let (data, long_name) = parse_yahoo_response(yahoo_response, symbol, interval, timeframe)?;
 
-    info!(candles = data.len(), "Successfully fetched ticker data");
-    Ok(data)
+    info!(candles = data.len(), long_name = ?long_name, "Successfully fetched ticker data");
+    Ok((data, long_name))
 }
 
 /// Construit l'URL de l'API Yahoo Finance
@@ -191,18 +193,20 @@ fn build_yahoo_url(symbol: &str, interval: Interval, timeframe: Timeframe) -> St
     )
 }
 
-/// Parse la réponse JSON de Yahoo et la convertit en OHLCData
+/// Parse la réponse JSON de Yahoo et la convertit en OHLCData avec le long_name
 ///
 /// CONCEPT RUST : Ownership et borrowing
 /// - yahoo_response est "moved" (pas de &), on en devient propriétaire
 /// - symbol est borrowed (&str), on ne le copie pas
 /// - interval et timeframe sont Copy (enums simples), donc copiés automatiquement
+///
+/// Retourne un tuple (OHLCData, Option<String>) où le String est le long_name du ticker
 fn parse_yahoo_response(
     yahoo_response: YahooResponse,
     symbol: &str,
     interval: Interval,
     timeframe: Timeframe,
-) -> Result<OHLCData> {
+) -> Result<(OHLCData, Option<String>)> {
     // Récupère le premier résultat
     // CONCEPT RUST : Pattern matching avec if let
     let result = yahoo_response
@@ -211,6 +215,9 @@ fn parse_yahoo_response(
         .into_iter()  // Consomme le Vec (move)
         .next()       // Prend le premier élément
         .context("Aucune données retournée par Yahoo Finance")?;
+
+    // Extrait le long_name depuis les métadonnées
+    let long_name = result.meta.long_name.clone();
 
     // Crée la structure OHLCData avec interval et timeframe
     let mut ohlc_data = OHLCData::new(symbol.to_string(), interval, timeframe);
@@ -310,7 +317,7 @@ fn parse_yahoo_response(
         anyhow::bail!("Aucune donnée OHLC valide trouvée pour {}", symbol);
     }
 
-    Ok(ohlc_data)
+    Ok((ohlc_data, long_name))
 }
 
 // ============================================================================
@@ -341,10 +348,13 @@ mod tests {
         // On vérifie juste que l'appel fonctionne
         // (on ne vérifie pas les données car elles changent)
         match result {
-            Ok(data) => {
+            Ok((data, long_name)) => {
                 assert_eq!(data.symbol, "AAPL");
                 assert!(!data.is_empty());
                 println!("✓ Récupéré {} chandelles pour AAPL", data.len());
+                if let Some(name) = long_name {
+                    println!("✓ Long name: {}", name);
+                }
             }
             Err(e) => {
                 println!("⚠ Test skippé (pas de connexion?) : {}", e);
