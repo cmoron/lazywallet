@@ -24,6 +24,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+
 use chrono::Timelike;
 
 use crate::app::App;
@@ -51,6 +52,15 @@ const BEARISH_COLOR: Color = Color::Rgb(234, 74, 90);   // Rouge
 /// Largeur de l'axe Y (pour les prix)
 const Y_AXIS_WIDTH: u16 = 12;
 
+/// Constantes pour le design réactif (Bug 6)
+/// CONCEPT : Responsive terminal design
+/// - MIN_TERMINAL_WIDTH : largeur minimale absolue pour afficher le graphique
+/// - ADAPTIVE_Y_AXIS_THRESHOLD : en dessous, on réduit la largeur de l'axe Y
+/// - NARROW_Y_AXIS_WIDTH : largeur réduite de l'axe Y pour terminaux étroits
+const MIN_TERMINAL_WIDTH: u16 = 60;
+const ADAPTIVE_Y_AXIS_THRESHOLD: u16 = 80;
+const NARROW_Y_AXIS_WIDTH: u16 = 8;
+
 // ============================================================================
 // Structure principale
 // ============================================================================
@@ -67,9 +77,21 @@ pub struct CandlestickRenderer<'a> {
 
 impl<'a> CandlestickRenderer<'a> {
     /// Crée un nouveau renderer
+    ///
+    /// CONCEPT : Responsive design
+    /// - Adapte la largeur de l'axe Y selon la largeur du terminal
+    /// - Largeur < 80 cols : axe Y réduit à 8 caractères
+    /// - Largeur >= 80 cols : axe Y normal à 12 caractères
     pub fn new(candles: &'a [OHLC], interval: Interval, area: Rect) -> Self {
         // Calcule les bornes de prix
         let (min_price, max_price) = Self::compute_price_bounds(candles);
+
+        // Largeur adaptative de l'axe Y selon la largeur du terminal
+        let y_axis_width = if area.width < ADAPTIVE_Y_AXIS_THRESHOLD {
+            NARROW_Y_AXIS_WIDTH  // Mode étroit : 8 caractères
+        } else {
+            Y_AXIS_WIDTH  // Mode normal : 12 caractères
+        };
 
         Self {
             candles,
@@ -78,7 +100,7 @@ impl<'a> CandlestickRenderer<'a> {
             max_price,
             // Réserve 3 pour header + 3 pour x-axis (ticks + labels + dates) = 6 lignes
             height: area.height.saturating_sub(6),
-            width: area.width.saturating_sub(Y_AXIS_WIDTH),
+            width: area.width.saturating_sub(y_axis_width),
         }
     }
 
@@ -377,9 +399,8 @@ impl<'a> CandlestickRenderer<'a> {
                 let is_day_change = if let Some(prev_day) = last_day {
                     current_day != prev_day
                 } else {
-                    // Premier chandelier : on affiche seulement si c'est vraiment le début du jour
-                    // (évite d'afficher la date si on commence en milieu/fin de journée)
-                    candle.timestamp.hour() < 2 // Affiche seulement si avant 2h du matin
+                    // Premier chandelier de la série : afficher seulement si c'est le début de journée
+                    candle.timestamp.hour() < 2
                 };
 
                 if is_day_change {
@@ -445,6 +466,13 @@ pub fn render_candlestick_chart(frame: &mut Frame, app: &App, area: Rect) {
 
     if data.candles.is_empty() {
         render_no_data(frame, area, "Pas de données à afficher");
+        return;
+    }
+
+    // Vérifie si le terminal est assez large pour afficher le graphique
+    // CONCEPT : Graceful degradation pour terminaux étroits
+    if area.width < MIN_TERMINAL_WIDTH {
+        render_too_narrow(frame, area);
         return;
     }
 
@@ -593,6 +621,39 @@ fn render_no_data(frame: &mut Frame, area: Rect, message: &str) {
         Line::from(Span::styled(
             message,
             Style::default().fg(Color::Red),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[ESC] Retour",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+
+    let paragraph = Paragraph::new(text).block(block).alignment(Alignment::Center);
+    frame.render_widget(paragraph, area);
+}
+
+/// Affiche un message quand le terminal est trop étroit
+///
+/// CONCEPT : Responsive design - graceful degradation
+/// - Prévient les problèmes d'affichage sur terminaux très étroits
+/// - Informe clairement l'utilisateur de la largeur minimale requise
+fn render_too_narrow(frame: &mut Frame, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" ⚠ Terminal trop petit ");
+
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Terminal trop étroit pour afficher le graphique",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Largeur minimale requise : {} colonnes", MIN_TERMINAL_WIDTH),
+            Style::default().fg(Color::Gray),
         )),
         Line::from(""),
         Line::from(Span::styled(
