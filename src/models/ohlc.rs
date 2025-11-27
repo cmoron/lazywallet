@@ -27,6 +27,8 @@ pub enum Timeframe {
     SixMonths,
     /// 1 an
     OneYear,
+    /// 2 ans (730 jours) - Pour intervalle W1
+    TwoYears,
 }
 
 impl Timeframe {
@@ -39,6 +41,7 @@ impl Timeframe {
             Timeframe::ThreeMonths => 90,
             Timeframe::SixMonths => 180,
             Timeframe::OneYear => 365,
+            Timeframe::TwoYears => 730,
         }
     }
 
@@ -51,6 +54,7 @@ impl Timeframe {
             Timeframe::ThreeMonths => "3M",
             Timeframe::SixMonths => "6M",
             Timeframe::OneYear => "1Y",
+            Timeframe::TwoYears => "2Y",
         }
     }
 }
@@ -136,7 +140,7 @@ impl Interval {
             Interval::H1 => Timeframe::OneMonth,      // 1h : 30 jours
             Interval::H4 => Timeframe::ThreeMonths,   // 4h : 90 jours
             Interval::D1 => Timeframe::SixMonths,     // 1d : 180 jours
-            Interval::W1 => Timeframe::OneYear,       // 1w : 365 jours
+            Interval::W1 => Timeframe::TwoYears,      // 1w : 730 jours (2 ans) - Plus de contexte historique
         }
     }
 
