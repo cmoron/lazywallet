@@ -286,8 +286,21 @@ impl<'a> CandlestickRenderer<'a> {
 
         let (format_str, is_intraday) = self.interval.x_axis_format();
 
+        // Calcule la largeur estimée des labels selon l'intervalle
+        // CONCEPT : Adaptive label spacing
+        // - Tient compte de la largeur réelle du format de label
+        // - Évite les chevauchements en garantissant un espacement minimum
+        let estimated_label_width = match self.interval {
+            Interval::M5 | Interval::M15 | Interval::M30 | Interval::H1 => 5,  // "HH:MM" = 5 chars
+            Interval::H4 => 9,   // "DD/MM HHh" = 9 chars max (ex: "26/11 8h")
+            Interval::D1 => 5,   // "DD/MM" = 5 chars
+            Interval::W1 => 6,   // "DD Mon" = 6 chars
+        };
+
         // Calcule combien de labels on peut afficher
-        let max_labels = (self.width as usize / 10).max(2);
+        // +2 pour garantir au moins 2 caractères d'espacement entre labels
+        let min_space_per_label = estimated_label_width + 2;
+        let max_labels = (self.width as usize / min_space_per_label).max(2).min(10);
 
         // Détermine quels chandeliers auront un label
         let label_interval = if visible.len() <= max_labels {
