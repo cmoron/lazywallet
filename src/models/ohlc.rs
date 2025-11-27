@@ -159,7 +159,7 @@ impl Interval {
                 ("%H:%M", true) // Format heure:minute pour intraday
             }
             Interval::H4 => {
-                ("%d/%m %H:00", true) // Date + heure pour 4h
+                ("%d/%m %Hh", true) // Date + heure raccourcie pour 4h (ex: "26/11 8h")
             }
             Interval::D1 => {
                 ("%d/%m", false) // Date seulement pour daily
