@@ -73,6 +73,7 @@ pub struct CandlestickRenderer<'a> {
     max_price: f64,
     height: u16,
     width: u16,
+    y_axis_width: u16,
 }
 
 impl<'a> CandlestickRenderer<'a> {
@@ -101,6 +102,7 @@ impl<'a> CandlestickRenderer<'a> {
             // Réserve 3 pour header + 3 pour x-axis (ticks + labels + dates) = 6 lignes
             height: area.height.saturating_sub(6),
             width: area.width.saturating_sub(y_axis_width),
+            y_axis_width,
         }
     }
 
@@ -332,7 +334,7 @@ impl<'a> CandlestickRenderer<'a> {
         };
 
         // Ligne 1 : Tick marks
-        let mut tick_spans = vec![Span::raw(format!("{:>width$}", "", width = Y_AXIS_WIDTH as usize))];
+        let mut tick_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
 
         for (i, _candle) in visible.iter().enumerate() {
             let tick = if i % label_interval == 0 {
@@ -354,7 +356,7 @@ impl<'a> CandlestickRenderer<'a> {
         lines.push(Line::from(tick_spans));
 
         // Ligne 2 : Labels de temps
-        let mut label_spans = vec![Span::raw(format!("{:>width$}", "", width = Y_AXIS_WIDTH as usize))];
+        let mut label_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
 
         let mut position = 0.0;
         for (i, candle) in visible.iter().enumerate() {
@@ -385,7 +387,7 @@ impl<'a> CandlestickRenderer<'a> {
 
         // Ligne 3 : Dates aux changements de jour (pour intraday)
         if is_intraday {
-            let mut date_spans = vec![Span::raw(format!("{:>width$}", "", width = Y_AXIS_WIDTH as usize))];
+            let mut date_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
 
             let mut current_position = 0.0;
             let mut last_day = None;
