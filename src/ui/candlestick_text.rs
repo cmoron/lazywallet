@@ -76,6 +76,19 @@ pub struct CandlestickRenderer<'a> {
     y_axis_width: u16,
 }
 
+/// Position d'un chandelier dans le graphique
+///
+/// CONCEPT : Single source of truth for alignment
+/// - Toutes les couches (chandeliers, ticks, labels, dates) utilisent les mêmes positions
+/// - Garantit l'alignement parfait chandelier ↔ timestamp
+#[derive(Debug, Clone, Copy)]
+struct CandlePosition {
+    /// Position absolue de la colonne (0-based depuis le début de la zone graphique)
+    column: usize,
+    /// Nombre de caractères alloués à ce chandelier (généralement 1)
+    width: usize,
+}
+
 impl<'a> CandlestickRenderer<'a> {
     /// Crée un nouveau renderer
     ///
@@ -241,6 +254,49 @@ impl<'a> CandlestickRenderer<'a> {
         } else {
             &self.candles[self.candles.len() - max_visible..]
         }
+    }
+
+    /// Pré-calcule les positions exactes de chaque chandelier
+    ///
+    /// CONCEPT : Accumulator pattern pour éviter le drift
+    /// - Chaque position = index × spacing (pas position_précédente + spacing)
+    /// - Évite l'accumulation d'erreurs d'arrondi
+    /// - Garantit que chandeliers et labels utilisent les mêmes positions
+    ///
+    /// Cas gérés :
+    /// - Terminal trop étroit : 1 chandelier par colonne (spacing ≈ 1.0)
+    /// - Terminal trop large : chandeliers répartis uniformément (spacing > 1.0)
+    /// - Spacing fractionnaire : accumulator évite le drift
+    /// - Chandelier unique : centré dans la largeur disponible
+    fn compute_candle_positions(chart_width: usize, num_candles: usize) -> Vec<CandlePosition> {
+        if num_candles == 0 {
+            return Vec::new();
+        }
+
+        if num_candles == 1 {
+            // Cas spécial : chandelier unique centré
+            return vec![CandlePosition {
+                column: chart_width / 2,
+                width: 1,
+            }];
+        }
+
+        let mut positions = Vec::with_capacity(num_candles);
+        let spacing = chart_width as f64 / num_candles as f64;
+
+        for i in 0..num_candles {
+            // Pattern accumulator : calcul depuis l'index, pas depuis la position précédente
+            // Cela évite l'accumulation d'erreurs d'arrondi sur plusieurs chandeliers
+            let exact_position = i as f64 * spacing;
+            let column = exact_position.round() as usize;
+
+            positions.push(CandlePosition {
+                column: column.min(chart_width.saturating_sub(1)),
+                width: 1,
+            });
+        }
+
+        positions
     }
 
     /// Génère toutes les lignes du graphique (chandeliers + axe X)
