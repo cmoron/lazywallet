@@ -300,6 +300,12 @@ impl<'a> CandlestickRenderer<'a> {
     }
 
     /// Génère toutes les lignes du graphique (chandeliers + axe X)
+    ///
+    /// CONCEPT : Position array pour alignement parfait
+    /// - Pré-calcule toutes les positions avec compute_candle_positions()
+    /// - Construit chaque ligne avec un tableau de caractères
+    /// - Place les chandeliers exactement aux positions calculées
+    /// - Utilise les MÊMES positions pour l'axe X → alignement garanti
     pub fn render_lines(&self) -> Vec<Line<'a>> {
         let mut lines = Vec::new();
         let visible = self.visible_candles();
@@ -308,13 +314,8 @@ impl<'a> CandlestickRenderer<'a> {
             return lines;
         }
 
-        // Calcule l'espacement entre chandeliers pour remplir toute la largeur
-        // Chaque chandelier = 1 caractère + espaces après
-        let spacing = if visible.len() > 1 {
-            self.width as f64 / visible.len() as f64
-        } else {
-            1.0
-        };
+        // Pré-calcule les positions de tous les chandeliers (source unique de vérité)
+        let positions = Self::compute_candle_positions(self.width as usize, visible.len());
 
         // Parcourt de haut en bas (reversed)
         for y in (1..=self.height).rev() {
@@ -326,59 +327,81 @@ impl<'a> CandlestickRenderer<'a> {
                 Style::default().fg(Color::Gray),
             ));
 
-            // Ajoute chaque chandelier avec espacement
-            for (i, candle) in visible.iter().enumerate() {
-                let ch = self.render_candle(candle, y);
-                let color = Self::candle_color(candle);
+            // Construit la ligne avec un tableau de caractères
+            let mut line_chars = vec![' '; self.width as usize];
+            let mut line_colors: Vec<Option<Color>> = vec![None; self.width as usize];
 
-                // Ajoute le caractère du chandelier
-                spans.push(Span::styled(
-                    ch.to_string(),
-                    Style::default().fg(color),
-                ));
-
-                // Ajoute l'espacement après (sauf pour le dernier)
-                if i < visible.len() - 1 {
-                    let num_spaces = (spacing - 1.0).round() as usize;
-                    if num_spaces > 0 {
-                        spans.push(Span::raw(" ".repeat(num_spaces)));
-                    }
+            // Place chaque chandelier à sa position exacte
+            for (candle, pos) in visible.iter().zip(positions.iter()) {
+                if pos.column < line_chars.len() {
+                    line_chars[pos.column] = self.render_candle(candle, y);
+                    line_colors[pos.column] = Some(Self::candle_color(candle));
                 }
+            }
+
+            // Convertit le tableau de caractères en spans avec couleurs
+            let mut current_color = line_colors[0];
+            let mut current_string = String::new();
+            current_string.push(line_chars[0]);
+
+            for i in 1..line_chars.len() {
+                if line_colors[i] == current_color {
+                    // Continue le span actuel
+                    current_string.push(line_chars[i]);
+                } else {
+                    // Émet le span actuel et commence un nouveau
+                    if let Some(color) = current_color {
+                        spans.push(Span::styled(
+                            current_string.clone(),
+                            Style::default().fg(color),
+                        ));
+                    } else {
+                        spans.push(Span::raw(current_string.clone()));
+                    }
+
+                    current_string.clear();
+                    current_string.push(line_chars[i]);
+                    current_color = line_colors[i];
+                }
+            }
+
+            // Émet le dernier span
+            if let Some(color) = current_color {
+                spans.push(Span::styled(current_string, Style::default().fg(color)));
+            } else {
+                spans.push(Span::raw(current_string));
             }
 
             lines.push(Line::from(spans));
         }
 
-        // Ajoute l'axe X (2 lignes)
-        lines.extend(self.render_x_axis(visible, spacing));
+        // Ajoute l'axe X en passant les positions (pas spacing)
+        lines.extend(self.render_x_axis(visible, &positions));
 
         lines
     }
 
     /// Génère les lignes de l'axe X avec tick marks et labels
     ///
-    /// CONCEPT : Dates au changement de jour
+    /// CONCEPT : Utilise les mêmes positions que les chandeliers
+    /// - Garantit l'alignement parfait chandelier ↔ timestamp
     /// - Ligne 1 : Tick marks (│)
     /// - Ligne 2 : Labels principaux (heures ou dates)
     /// - Ligne 3 : Dates aux changements de jour (intraday seulement)
-    fn render_x_axis(&self, visible: &[OHLC], spacing: f64) -> Vec<Line<'a>> {
+    fn render_x_axis(&self, visible: &[OHLC], positions: &[CandlePosition]) -> Vec<Line<'a>> {
         let mut lines = vec![];
 
         let (format_str, is_intraday) = self.interval.x_axis_format();
 
         // Calcule la largeur estimée des labels selon l'intervalle
-        // CONCEPT : Adaptive label spacing
-        // - Tient compte de la largeur réelle du format de label
-        // - Évite les chevauchements en garantissant un espacement minimum
         let estimated_label_width = match self.interval {
-            Interval::M5 | Interval::M15 | Interval::M30 | Interval::H1 => 5,  // "HH:MM" = 5 chars
-            Interval::H4 => 9,   // "DD/MM HHh" = 9 chars max (ex: "26/11 8h")
-            Interval::D1 => 5,   // "DD/MM" = 5 chars
-            Interval::W1 => 6,   // "DD Mon" = 6 chars
+            Interval::M5 | Interval::M15 | Interval::M30 | Interval::H1 => 5,
+            Interval::H4 => 9,
+            Interval::D1 => 5,
+            Interval::W1 => 6,
         };
 
         // Calcule combien de labels on peut afficher
-        // +2 pour garantir au moins 2 caractères d'espacement entre labels
         let min_space_per_label = estimated_label_width + 2;
         let max_labels = (self.width as usize / min_space_per_label).max(2).min(10);
 
@@ -390,106 +413,94 @@ impl<'a> CandlestickRenderer<'a> {
         };
 
         // Ligne 1 : Tick marks
-        let mut tick_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
+        // Construit avec tableau de caractères pour alignement parfait
+        let mut tick_line = vec![' '; self.width as usize];
 
-        for (i, _candle) in visible.iter().enumerate() {
-            let tick = if i % label_interval == 0 {
-                "│"
-            } else {
-                " "
-            };
-
-            tick_spans.push(Span::styled(tick, Style::default().fg(Color::Gray)));
-
-            if i < visible.len() - 1 {
-                let num_spaces = (spacing - 1.0).round() as usize;
-                if num_spaces > 0 {
-                    tick_spans.push(Span::raw(" ".repeat(num_spaces)));
-                }
+        for (i, pos) in positions.iter().enumerate() {
+            if i % label_interval == 0 && pos.column < tick_line.len() {
+                tick_line[pos.column] = '│';
             }
         }
 
+        let mut tick_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
+        tick_spans.push(Span::styled(
+            tick_line.iter().collect::<String>(),
+            Style::default().fg(Color::Gray),
+        ));
         lines.push(Line::from(tick_spans));
 
         // Ligne 2 : Labels de temps
-        let mut label_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
+        // Place chaque label centré sur la position du chandelier
+        let mut label_line = vec![' '; self.width as usize];
 
-        let mut position = 0.0;
-        for (i, candle) in visible.iter().enumerate() {
+        for (i, (candle, pos)) in visible.iter().zip(positions.iter()).enumerate() {
             if i % label_interval == 0 {
                 let time_label = candle.timestamp.format(format_str).to_string();
 
-                label_spans.push(Span::styled(
-                    time_label.clone(),
-                    Style::default().fg(Color::Gray),
-                ));
+                // Centre le label sur la position du chandelier
+                let label_start = pos.column.saturating_sub(time_label.len() / 2);
+                let label_end = (label_start + time_label.len()).min(label_line.len());
 
-                let next_label_position = if i + label_interval < visible.len() {
-                    (i + label_interval) as f64 * spacing
-                } else {
-                    self.width as f64
-                };
-
-                let space_to_next = (next_label_position - position - time_label.len() as f64).max(0.0) as usize;
-                if space_to_next > 0 {
-                    label_spans.push(Span::raw(" ".repeat(space_to_next)));
+                // Place le label caractère par caractère
+                for (j, ch) in time_label.chars().enumerate() {
+                    let idx = label_start + j;
+                    if idx < label_end {
+                        label_line[idx] = ch;
+                    }
                 }
-
-                position = next_label_position;
             }
         }
 
+        let mut label_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
+        label_spans.push(Span::styled(
+            label_line.iter().collect::<String>(),
+            Style::default().fg(Color::Gray),
+        ));
         lines.push(Line::from(label_spans));
 
         // Ligne 3 : Dates aux changements de jour (pour intraday)
         if is_intraday {
-            let mut date_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
-
-            let mut current_position = 0.0;
+            let mut date_line = vec![' '; self.width as usize];
             let mut last_day = None;
-            let mut last_date_end_position = 0.0;
-            const MIN_DATE_SPACING: f64 = 2.0; // Espace minimum entre deux dates
 
-            for (i, candle) in visible.iter().enumerate() {
+            for (candle, pos) in visible.iter().zip(positions.iter()) {
                 let current_day = candle.timestamp.date_naive();
 
                 // Détecte le changement de jour
                 let is_day_change = if let Some(prev_day) = last_day {
                     current_day != prev_day
                 } else {
-                    // Premier chandelier de la série : afficher seulement si c'est le début de journée
                     candle.timestamp.hour() < 2
                 };
 
                 if is_day_change {
-                    // Calcule la position de ce chandelier
-                    let candle_position = i as f64 * spacing;
+                    let date_label = candle.timestamp.format("%d/%m").to_string();
 
-                    // Vérifie qu'on a assez d'espace depuis la dernière date
-                    let space_from_last_date = candle_position - last_date_end_position;
+                    // Centre la date sur la position du chandelier
+                    let date_start = pos.column.saturating_sub(date_label.len() / 2);
+                    let date_end = (date_start + date_label.len()).min(date_line.len());
 
-                    if space_from_last_date >= MIN_DATE_SPACING || last_day.is_none() {
-                        // Ajoute des espaces pour arriver à cette position
-                        let spaces_needed = (candle_position - current_position).max(0.0) as usize;
-                        if spaces_needed > 0 {
-                            date_spans.push(Span::raw(" ".repeat(spaces_needed)));
+                    // Vérifie qu'on n'écrase pas une date déjà placée
+                    let has_overlap = (date_start..date_end).any(|idx| date_line[idx] != ' ');
+
+                    if !has_overlap {
+                        for (j, ch) in date_label.chars().enumerate() {
+                            let idx = date_start + j;
+                            if idx < date_end {
+                                date_line[idx] = ch;
+                            }
                         }
-
-                        // Ajoute le label de date
-                        let date_label = candle.timestamp.format("%d/%m").to_string();
-                        date_spans.push(Span::styled(
-                            date_label.clone(),
-                            Style::default().fg(Color::Rgb(120, 120, 120)),
-                        ));
-
-                        current_position = candle_position + date_label.len() as f64;
-                        last_date_end_position = current_position;
                     }
                 }
 
                 last_day = Some(current_day);
             }
 
+            let mut date_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
+            date_spans.push(Span::styled(
+                date_line.iter().collect::<String>(),
+                Style::default().fg(Color::Rgb(120, 120, 120)),
+            ));
             lines.push(Line::from(date_spans));
         }
 
