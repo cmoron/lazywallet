@@ -83,27 +83,19 @@ LazyWallet supports any ticker available on Yahoo Finance:
 ## 🎨 Interface
 
 ### Dashboard View
-```
-┌────────────────────── LazyWallet ──────────────────────┐
-│          🚀 Terminal User Interface Mode               │
-└────────────────────────────────────────────────────────┘
-┌────────────────────── 📊 Watchlist ────────────────────┐
-│ BTC-USD  Bitcoin              $45,234.50  ▲ +2.34%     │
-│ AAPL     Apple Inc.           $178.23     ▼ -0.87%     │
-│ TSLA     Tesla                $242.56     ▲ +1.45%     │
-└────────────────────────────────────────────────────────┘
-┌────────────────────────────────────────────────────────┐
-│ [q] Quit  [↑↓ / j k] Navigate  [Enter] Chart           │
-│ [a] Add  [d] Delete                                    │
-└────────────────────────────────────────────────────────┘
-```
+![Dashboard](docs/images/dashboard.png)
+
+The main dashboard displays your watchlist with real-time prices, daily changes, and quick navigation shortcuts.
 
 ### Chart View
-Displays Unicode-based candlestick charts with:
-- Green candles for bullish (close > open)
-- Red candles for bearish (close < open)
+![Chart](docs/images/chart.png)
+
+Beautiful Unicode candlestick charts with:
+- Green candles for bullish periods (close > open)
+- Red candles for bearish periods (close < open)
 - Dynamic price and date axes
-- Current interval indicator
+- Multiple timeframe support (5m, 15m, 30m, 1h, 4h, 1d, 1w)
+- Perfect alignment between candles and timeline
 
 ## 🛠️ Tech Stack
 
