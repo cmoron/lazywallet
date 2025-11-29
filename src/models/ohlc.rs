@@ -17,18 +17,28 @@ use serde::{Deserialize, Serialize};
 pub enum Timeframe {
     /// 1 jour de données
     OneDay,
+    /// 3 jours de données
+    ThreeDay,
+    /// 5 jours de données
+    FiveDay,
     /// 7 jours de données
     OneWeek,
+    /// 14 jours de données (2 semaines)
+    TwoWeeks,
     /// 1 mois (30 jours)
     OneMonth,
+    /// 2 mois (60 jours)
+    TwoMonths,
     /// 3 mois
     ThreeMonths,
     /// 6 mois
     SixMonths,
     /// 1 an
     OneYear,
-    /// 2 ans (730 jours) - Pour intervalle W1
+    /// 2 ans (730 jours)
     TwoYears,
+    /// 5 ans (1825 jours)
+    FiveYears,
 }
 
 impl Timeframe {
@@ -36,12 +46,17 @@ impl Timeframe {
     pub fn to_days(&self) -> u32 {
         match self {
             Timeframe::OneDay => 1,
+            Timeframe::ThreeDay => 3,
+            Timeframe::FiveDay => 5,
             Timeframe::OneWeek => 7,
+            Timeframe::TwoWeeks => 14,
             Timeframe::OneMonth => 30,
+            Timeframe::TwoMonths => 60,
             Timeframe::ThreeMonths => 90,
             Timeframe::SixMonths => 180,
             Timeframe::OneYear => 365,
             Timeframe::TwoYears => 730,
+            Timeframe::FiveYears => 1825,
         }
     }
 
@@ -49,12 +64,17 @@ impl Timeframe {
     pub fn label(&self) -> &str {
         match self {
             Timeframe::OneDay => "1D",
+            Timeframe::ThreeDay => "3D",
+            Timeframe::FiveDay => "5D",
             Timeframe::OneWeek => "7D",
+            Timeframe::TwoWeeks => "14D",
             Timeframe::OneMonth => "1M",
+            Timeframe::TwoMonths => "2M",
             Timeframe::ThreeMonths => "3M",
             Timeframe::SixMonths => "6M",
             Timeframe::OneYear => "1Y",
             Timeframe::TwoYears => "2Y",
+            Timeframe::FiveYears => "5Y",
         }
     }
 }
@@ -86,6 +106,53 @@ pub enum Interval {
     D1,
     /// 1 semaine (weekly)
     W1,
+}
+
+/// Stratégie d'affichage des labels sur l'axe X
+///
+/// CONCEPT : Labels intelligents par intervalle
+/// - Chaque intervalle a une stratégie adaptée (heures rondes, jours, semaines, etc.)
+/// - Évite les labels bizarres (14:17) au profit de valeurs rondes (15:00)
+#[derive(Debug, Clone, Copy)]
+pub enum LabelStrategy {
+    /// Heures rondes (00:00, 06:00, 12:00, 18:00)
+    /// interval_hours : affiche un label toutes les N heures (1, 3, 6, etc.)
+    RoundHours { interval_hours: u32 },
+
+    /// Changements de jour (affiche à chaque nouveau jour)
+    DayChanges,
+
+    /// Jours réguliers (tous les N jours)
+    /// interval_days : espacement entre les labels (7 = une semaine, etc.)
+    RegularDays { interval_days: u32 },
+
+    /// Semaines / périodes longues
+    /// interval_days : espacement en jours (14, 30, etc.)
+    RegularWeeks { interval_days: u32 },
+
+    /// Mois / trimestres
+    /// interval_days : espacement en mois (1, 2, etc.)
+    RegularMonths { interval_months: u32 },
+
+    /// Années / périodes très longues
+    /// interval_years : espacement en années (1, 2, etc.)
+    RegularYears { interval_years: u32 },
+}
+
+/// Formats pour l'axe X (heures et dates séparées)
+///
+/// CONCEPT : Séparation des préoccupations + stratégie intelligente
+/// - time_format : pour la ligne des heures (None si pas applicable)
+/// - date_format : pour la ligne des dates
+/// - label_strategy : détermine quels chandeliers ont un label
+#[derive(Debug, Clone, Copy)]
+pub struct AxisFormats {
+    /// Format pour la ligne des heures (None pour D1/W1)
+    pub time_format: Option<&'static str>,
+    /// Format pour la ligne des dates
+    pub date_format: &'static str,
+    /// Stratégie d'affichage des labels
+    pub label_strategy: LabelStrategy,
 }
 
 impl Interval {
@@ -122,52 +189,100 @@ impl Interval {
 
     /// Retourne le timeframe par défaut pour cet intervalle
     ///
-    /// CONCEPT : Mapping interval → timeframe
-    /// Basé sur les pratiques standards de Yahoo Finance et TradingView :
-    /// - Intraday court (1m, 5m) : 1-5 jours
-    /// - Intraday moyen (15m, 30m) : 7-14 jours
-    /// - Intraday long (1h, 4h) : 30-90 jours
-    /// - Daily+ (1d, 1w) : 180-365 jours
+    /// CONCEPT : Timeframes optimisés pour 300-500 chandeliers
+    /// - Actions : marché ouvert ~6.5h/jour (9h30-16h)
+    /// - Crypto : marché 24h/24
+    /// - Objectif : 300-500 chandeliers de l'API, affichage des 250 derniers
+    ///
+    /// Calculs optimisés :
+    /// - 5m : 3j → actions: ~234, crypto: ~864
+    /// - 15m : 14j → actions: ~364, crypto: ~1344
+    /// - 30m : 30j → actions: ~390, crypto: ~1440
+    /// - 1h : 30j → actions: ~195, crypto: ~720
+    /// - 4h : 60j (max API) → actions: ~98, crypto: ~360
+    /// - 1d : 2 ans → ~504 jours de trading
+    /// - 1w : 5 ans → ~260 semaines
     ///
     /// Limitations Yahoo Finance :
-    /// - 1m : max 7 jours de données disponibles
     /// - Intraday (<1d) : max 60 jours
     pub fn default_timeframe(&self) -> Timeframe {
         match self {
-            Interval::M5 => Timeframe::OneWeek,       // 5m : 7 jours
-            Interval::M15 => Timeframe::OneWeek,      // 15m : 7 jours
-            Interval::M30 => Timeframe::OneMonth,     // 30m : 30 jours (au lieu de 14j)
-            Interval::H1 => Timeframe::OneMonth,      // 1h : 30 jours
-            Interval::H4 => Timeframe::ThreeMonths,   // 4h : 90 jours
-            Interval::D1 => Timeframe::SixMonths,     // 1d : 180 jours
-            Interval::W1 => Timeframe::TwoYears,      // 1w : 730 jours (2 ans) - Plus de contexte historique
+            Interval::M5 => Timeframe::OneWeek,
+            Interval::M15 => Timeframe::TwoWeeks,
+            Interval::M30 => Timeframe::OneMonth,
+            Interval::H1 => Timeframe::SixMonths,
+            Interval::H4 => Timeframe::OneYear,
+            Interval::D1 => Timeframe::TwoYears,
+            Interval::W1 => Timeframe::FiveYears,
         }
     }
 
-    /// Format de label pour l'axe X selon l'intervalle
+    /// Retourne les formats et stratégie de labels pour l'axe X
     ///
-    /// CONCEPT : Formatage adaptatif
-    /// - Intraday : affiche l'heure (HH:MM)
-    /// - Daily+ : affiche la date (DD/MM)
+    /// CONCEPT : Labels intelligents inspirés de Yahoo Finance
+    /// - Chaque intervalle a une stratégie adaptée (heures rondes, jours, etc.)
+    /// - M5 : labels toutes les heures (09:00, 10:00, 11:00, ...)
+    /// - M15 : labels toutes les 3h (09:00, 12:00, 15:00, ...)
+    /// - M30 : labels toutes les 6h (00:00, 06:00, 12:00, 18:00)
+    /// - H1 : labels tous les 2 jours (01/01, 03/01, 05/01, ...)
+    /// - H4 : labels tous les mois (01/01, 01/02
+    /// - D1 : labels tous les 2 mois (01/01, 01/03, 01/05, ...)
+    /// - W1 : labels tous les ans (Jan, Feb, Mar, ...)
     ///
-    /// Retourne un tuple (format_chrono, est_intraday)
-    /// - format_chrono : string de format pour chrono (ex: "%H:%M")
-    /// - est_intraday : true si besoin d'afficher les heures
-    pub fn x_axis_format(&self) -> (&'static str, bool) {
+    /// Structure à 3 lignes :
+    /// - Ligne 1 : tick marks │
+    /// - Ligne 2 : heures (ou vide)
+    /// - Ligne 3 : dates
+    pub fn x_axis_format(&self) -> AxisFormats {
         match self {
-            Interval::M5 | Interval::M15 | Interval::M30 | Interval::H1 => {
-                ("%H:%M", true) // Format heure:minute pour intraday
-            }
-            Interval::H4 => {
-                ("%d/%m %Hh", true) // Date + heure raccourcie pour 4h (ex: "26/11 8h")
-            }
-            Interval::D1 => {
-                ("%d/%m", false) // Date seulement pour daily
-            }
-            Interval::W1 => {
-                ("%d %b", false) // Jour + mois abrégé pour weekly
-            }
+            Interval::M5 => AxisFormats {
+                time_format: Some("%H:%M"),
+                date_format: "%d/%m",
+                label_strategy: LabelStrategy::RoundHours { interval_hours: 1 },
+            },
+            Interval::M15 => AxisFormats {
+                time_format: Some("%H:%M"),
+                date_format: "%d/%m",
+                label_strategy: LabelStrategy::RoundHours { interval_hours: 3 },
+            },
+            Interval::M30 => AxisFormats {
+                time_format: Some("%H:%M"),
+                date_format: "%d/%m",
+                label_strategy: LabelStrategy::RoundHours { interval_hours: 6 },
+            },
+            Interval::H1 => AxisFormats {
+                time_format: None,
+                date_format: "%d/%m",
+                label_strategy: LabelStrategy::RegularDays { interval_days: 2 },
+            },
+            Interval::H4 => AxisFormats {
+                time_format: None,
+                date_format: "%b", // Month only
+                label_strategy: LabelStrategy::RegularMonths { interval_months: 1 },
+            },
+            Interval::D1 => AxisFormats {
+                time_format: None,
+                date_format: "%b", // Month only
+                label_strategy: LabelStrategy::RegularMonths { interval_months: 1 },
+            },
+            Interval::W1 => AxisFormats {
+                time_format: None,
+                date_format: "%Y", // Year only
+                label_strategy: LabelStrategy::RegularYears { interval_years: 1 },
+            },
         }
+    }
+
+    /// Retourne true si l'intervalle est intraday (affiche les heures)
+    ///
+    /// CONCEPT : Helper pour déterminer le type d'affichage
+    /// - Intraday : M5, M15, M30, H1, H4 (plusieurs chandelles par jour)
+    /// - Long terme : D1, W1 (une chandelle = un jour ou plus)
+    pub fn is_intraday(&self) -> bool {
+        matches!(
+            self,
+            Interval::M5 | Interval::M15 | Interval::M30 | Interval::H1 | Interval::H4
+        )
     }
 
     /// Retourne tous les intervalles disponibles (pour UI de sélection)
@@ -512,7 +627,7 @@ mod tests {
     fn test_interval_default_timeframe() {
         assert_eq!(Interval::M30.default_timeframe(), Timeframe::OneMonth);
         assert_eq!(Interval::D1.default_timeframe(), Timeframe::SixMonths);
-        assert_eq!(Interval::W1.default_timeframe(), Timeframe::OneYear);
+        assert_eq!(Interval::W1.default_timeframe(), Timeframe::TwoYears);
     }
 
     #[test]

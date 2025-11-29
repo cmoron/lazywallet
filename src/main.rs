@@ -189,18 +189,15 @@ fn main() -> Result<()> {
         eprintln!("   Continuing without logging...");
     });
 
-    println!("LazyWallet starting up");
     info!("LazyWallet starting up");
 
     // Charge les données de la watchlist (appels API async)
-    info!("Loading watchlist data");
-    println!("📊 Chargement des données...\n");
+    info!("📊 Chargement des données...\n");
 
     let runtime = tokio::runtime::Runtime::new()?;
     let watchlist = runtime.block_on(load_watchlist_data())?;
 
-    info!("Watchlist data loaded successfully");
-    println!("✅ Données chargées !\n");
+    info!("✅ Données chargées !\n");
 
     // Setup du terminal en mode TUI
     debug!("Setting up terminal");
@@ -275,7 +272,7 @@ async fn load_watchlist_data() -> Result<Vec<WatchlistItem>> {
     // CONCEPT RUST : Loop avec enumerate
     for (i, &(symbol, name)) in tickers.iter().enumerate() {
         debug!(ticker = %symbol, progress = i + 1, total = tickers.len(), "Fetching ticker data");
-        println!("  [{}/{}] Chargement de {}...", i + 1, tickers.len(), symbol);
+        info!("  [{}/{}] Chargement de {}...", i + 1, tickers.len(), symbol);
 
         // Appel API pour récupérer les données
         // Utilise l'intervalle par défaut (30m)
@@ -291,7 +288,7 @@ async fn load_watchlist_data() -> Result<Vec<WatchlistItem>> {
                     display_name,
                     data,
                 ));
-                println!("    ✓ OK");
+                info!("    ✓ OK");
             }
             Err(e) => {
                 // Erreur : affiche et crée un item sans données

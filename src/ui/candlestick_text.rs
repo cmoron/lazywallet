@@ -25,10 +25,10 @@ use ratatui::{
     Frame,
 };
 
-use chrono::Timelike;
+use chrono::{Datelike, Timelike};
 
 use crate::app::App;
-use crate::models::{Interval, OHLC};
+use crate::models::{Interval, LabelStrategy, OHLC};
 
 // ============================================================================
 // Constantes
@@ -57,7 +57,7 @@ const Y_AXIS_WIDTH: u16 = 12;
 /// - MIN_TERMINAL_WIDTH : largeur minimale absolue pour afficher le graphique
 /// - ADAPTIVE_Y_AXIS_THRESHOLD : en dessous, on réduit la largeur de l'axe Y
 /// - NARROW_Y_AXIS_WIDTH : largeur réduite de l'axe Y pour terminaux étroits
-const MIN_TERMINAL_WIDTH: u16 = 60;
+const MIN_TERMINAL_WIDTH: u16 = 80;
 const ADAPTIVE_Y_AXIS_THRESHOLD: u16 = 80;
 const NARROW_Y_AXIS_WIDTH: u16 = 8;
 
@@ -97,8 +97,10 @@ impl<'a> CandlestickRenderer<'a> {
     /// - Largeur < 80 cols : axe Y réduit à 8 caractères
     /// - Largeur >= 80 cols : axe Y normal à 12 caractères
     pub fn new(candles: &'a [OHLC], interval: Interval, area: Rect) -> Self {
-        // Calcule les bornes de prix
-        let (min_price, max_price) = Self::compute_price_bounds(candles);
+        // CORRECTION : Calcule les bornes de prix sur les chandeliers VISIBLES uniquement
+        // Évite que des pics/creux hors de la fenêtre d'affichage n'étirent l'axe Y
+        let visible = Self::get_visible_slice(candles);
+        let (min_price, max_price) = Self::compute_price_bounds(visible);
 
         // Largeur adaptative de l'axe Y selon la largeur du terminal
         let y_axis_width = if area.width < ADAPTIVE_Y_AXIS_THRESHOLD {
@@ -246,14 +248,24 @@ impl<'a> CandlestickRenderer<'a> {
         }
     }
 
-    /// Sélectionne les chandeliers visibles (les N derniers qui tiennent à l'écran)
-    fn visible_candles(&self) -> &[OHLC] {
-        let max_visible = self.width as usize;
-        if self.candles.len() <= max_visible {
-            self.candles
+    /// Fonction helper : extrait les chandeliers visibles (les ~250 derniers)
+    fn get_visible_slice(candles: &[OHLC]) -> &[OHLC] {
+        const MAX_VISIBLE_CANDLES: usize = 250;
+
+        if candles.len() <= MAX_VISIBLE_CANDLES {
+            candles
         } else {
-            &self.candles[self.candles.len() - max_visible..]
+            &candles[candles.len() - MAX_VISIBLE_CANDLES..]
         }
+    }
+
+    /// Sélectionne les chandeliers visibles (les ~250 derniers pour cohérence visuelle)
+    fn visible_candles(&self) -> &[OHLC] {
+        // CONCEPT : Limite d'affichage à ~200-300 chandeliers
+        // - On requête plus de données (pour avoir assez pour les actions)
+        // - Mais on affiche seulement les ~250 derniers (cohérence visuelle)
+        // - Fonctionne pour crypto (24h/24) ET actions (6.5h/jour)
+        Self::get_visible_slice(self.candles)
     }
 
     /// Pré-calcule les positions exactes de chaque chandelier
@@ -381,45 +393,125 @@ impl<'a> CandlestickRenderer<'a> {
         lines
     }
 
-    /// Génère les lignes de l'axe X avec tick marks et labels
+    /// Détermine si une chandelle doit avoir un label selon la stratégie
+    fn should_show_label(
+        candle: &OHLC,
+        prev_candle: Option<&OHLC>,
+        strategy: LabelStrategy,
+    ) -> bool {
+        match strategy {
+            LabelStrategy::RoundHours { interval_hours } => {
+                // Affiche si l'heure est un multiple de interval_hours
+                candle.timestamp.hour() % interval_hours == 0
+                    && candle.timestamp.minute() == 0
+            }
+            LabelStrategy::DayChanges => {
+                // Affiche si changement de jour
+                if let Some(prev) = prev_candle {
+                    candle.timestamp.date_naive() != prev.timestamp.date_naive()
+                } else {
+                    true // Première chandelle
+                }
+            }
+            LabelStrategy::RegularDays { interval_days } => {
+                // Affiche si jour est multiple de interval_days depuis la dernière chandelle
+                if let Some(prev) = prev_candle {
+                    let days_diff = (candle.timestamp.date_naive() - prev.timestamp.date_naive())
+                        .num_days()
+                        .abs();
+                    days_diff >= interval_days as i64
+                } else {
+                    true // Première chandelle
+                }
+            }
+            LabelStrategy::RegularWeeks { interval_days } => {
+                // Affiche si le jour est multiple de interval_days depuis la dernière chandelle
+                if let Some(prev) = prev_candle {
+                    let days_diff = (candle.timestamp.date_naive() - prev.timestamp.date_naive())
+                        .num_days()
+                        .abs();
+                    days_diff >= interval_days as i64
+                } else {
+                    true // Première chandelle
+                }
+            }
+            LabelStrategy::RegularMonths { interval_months } => {
+                // Affiche si le jour est multiple de interval_months depuis la dernière chandelle
+                if let Some(prev) = prev_candle {
+                    let months_diff = (candle.timestamp.year() - prev.timestamp.year()) * 12
+                        + (candle.timestamp.month() as i32 - prev.timestamp.month() as i32);
+                    months_diff.abs() >= interval_months as i32
+                } else {
+                    true // Première chandelle
+                }
+            }
+            LabelStrategy::RegularYears { interval_years } => {
+                // Affiche si le jour est multiple de interval_years depuis la dernière chandelle
+                if let Some(prev) = prev_candle {
+                    let years_diff = candle.timestamp.year() - prev.timestamp.year();
+                    years_diff.abs() >= interval_years as i32
+                } else {
+                    true // Première chandelle
+                }
+            }
+        }
+    }
+
+    /// Génère les lignes de l'axe X avec tick marks et labels harmonisés
     ///
-    /// CONCEPT : Utilise les mêmes positions que les chandeliers
-    /// - Garantit l'alignement parfait chandelier ↔ timestamp
+    /// CONCEPT : Structure uniformisée à 3 lignes
     /// - Ligne 1 : Tick marks (│)
-    /// - Ligne 2 : Labels principaux (heures ou dates)
-    /// - Ligne 3 : Dates aux changements de jour (intraday seulement)
+    /// - Ligne 2 : Heures (HH:MM) pour intraday OU vide pour D1/W1
+    /// - Ligne 3 : Dates (DD/MM ou DD/MM/YYYY) pour TOUS les intervalles
+    ///
+    /// HARMONISATION :
+    /// - Séparation claire heures/dates
+    /// - Format de date uniforme
+    /// - Année affichée automatiquement si données multi-années
     fn render_x_axis(&self, visible: &[OHLC], positions: &[CandlePosition]) -> Vec<Line<'a>> {
         let mut lines = vec![];
+        let axis_formats = self.interval.x_axis_format();
+        let label_strategy = axis_formats.label_strategy;
 
-        let (format_str, is_intraday) = self.interval.x_axis_format();
-
-        // Calcule la largeur estimée des labels selon l'intervalle
-        let estimated_label_width = match self.interval {
-            Interval::M5 | Interval::M15 | Interval::M30 | Interval::H1 => 5,
-            Interval::H4 => 9,
-            Interval::D1 => 5,
-            Interval::W1 => 6,
-        };
-
-        // Calcule combien de labels on peut afficher
-        let min_space_per_label = estimated_label_width + 2;
-        let max_labels = (self.width as usize / min_space_per_label).max(2).min(10);
-
-        // Détermine quels chandeliers auront un label
-        let label_interval = if visible.len() <= max_labels {
-            1
+        // Détecte si le terminal est étroit et ajuste la stratégie
+        // TODO: Ajuster avec tests empiriques
+        // - Seuil actuel: 80 cols
+        // - Multiplicateur actuel: x2
+        // - À tester: seuils différents par intervalle? (50 pour M5, 80 pour D1, etc.)
+        let is_narrow = self.width < 80;
+        let adjusted_strategy = if is_narrow {
+            match label_strategy {
+                LabelStrategy::RoundHours { interval_hours } => {
+                    // Double l'intervalle si étroit
+                    LabelStrategy::RoundHours {
+                        interval_hours: interval_hours * 2,
+                    }
+                }
+                LabelStrategy::RegularDays { interval_days } => {
+                    LabelStrategy::RegularDays {
+                        interval_days: interval_days * 2,
+                    }
+                }
+                // DayChanges et Weeks: pas d'ajustement
+                other => other,
+            }
         } else {
-            visible.len() / max_labels
+            label_strategy
         };
 
-        // Ligne 1 : Tick marks
-        // Construit avec tableau de caractères pour alignement parfait
-        let mut tick_line = vec![' '; self.width as usize];
+        let date_format = { axis_formats.date_format };
 
-        for (i, pos) in positions.iter().enumerate() {
-            if i % label_interval == 0 && pos.column < tick_line.len() {
+        // ========================================
+        // Ligne 1 : Tick marks │
+        // ========================================
+        let mut tick_line = vec![' '; self.width as usize];
+        let mut prev_candle = None;
+
+        for (candle, pos) in visible.iter().zip(positions.iter()) {
+            if Self::should_show_label(candle, prev_candle, adjusted_strategy) && pos.column < tick_line.len() {
                 tick_line[pos.column] = '│';
             }
+            prev_candle = Some(candle);
         }
 
         let mut tick_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
@@ -429,80 +521,89 @@ impl<'a> CandlestickRenderer<'a> {
         ));
         lines.push(Line::from(tick_spans));
 
-        // Ligne 2 : Labels de temps
-        // Place chaque label centré sur la position du chandelier
-        let mut label_line = vec![' '; self.width as usize];
-
-        for (i, (candle, pos)) in visible.iter().zip(positions.iter()).enumerate() {
-            if i % label_interval == 0 {
-                let time_label = candle.timestamp.format(format_str).to_string();
-
-                // Centre le label sur la position du chandelier
-                let label_start = pos.column.saturating_sub(time_label.len() / 2);
-                let label_end = (label_start + time_label.len()).min(label_line.len());
-
-                // Place le label caractère par caractère
-                for (j, ch) in time_label.chars().enumerate() {
-                    let idx = label_start + j;
-                    if idx < label_end {
-                        label_line[idx] = ch;
-                    }
-                }
-            }
-        }
-
-        let mut label_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
-        label_spans.push(Span::styled(
-            label_line.iter().collect::<String>(),
-            Style::default().fg(Color::Gray),
-        ));
-        lines.push(Line::from(label_spans));
-
-        // Ligne 3 : Dates aux changements de jour (pour intraday)
-        if is_intraday {
-            let mut date_line = vec![' '; self.width as usize];
-            let mut last_day = None;
+        // ========================================
+        // Ligne 2 : Heures (HH:MM) ou vide
+        // ========================================
+        if let Some(time_fmt) = axis_formats.time_format {
+            // Intraday : afficher les heures
+            let mut time_line = vec![' '; self.width as usize];
+            let mut prev_candle = None;
 
             for (candle, pos) in visible.iter().zip(positions.iter()) {
-                let current_day = candle.timestamp.date_naive();
+                if Self::should_show_label(candle, prev_candle, adjusted_strategy) {
+                    let time_label = candle.timestamp.format(time_fmt).to_string();
 
-                // Détecte le changement de jour
-                let is_day_change = if let Some(prev_day) = last_day {
-                    current_day != prev_day
-                } else {
-                    candle.timestamp.hour() < 2
-                };
+                    // Centre le label sur la position du chandelier
+                    let label_start = pos.column.saturating_sub(time_label.len() / 2);
+                    let label_end = (label_start + time_label.len()).min(time_line.len());
 
-                if is_day_change {
-                    let date_label = candle.timestamp.format("%d/%m").to_string();
-
-                    // Centre la date sur la position du chandelier
-                    let date_start = pos.column.saturating_sub(date_label.len() / 2);
-                    let date_end = (date_start + date_label.len()).min(date_line.len());
-
-                    // Vérifie qu'on n'écrase pas une date déjà placée
-                    let has_overlap = (date_start..date_end).any(|idx| date_line[idx] != ' ');
-
-                    if !has_overlap {
-                        for (j, ch) in date_label.chars().enumerate() {
-                            let idx = date_start + j;
-                            if idx < date_end {
-                                date_line[idx] = ch;
-                            }
+                    // Place le label caractère par caractère
+                    for (j, ch) in time_label.chars().enumerate() {
+                        let idx = label_start + j;
+                        if idx < label_end {
+                            time_line[idx] = ch;
                         }
                     }
                 }
-
-                last_day = Some(current_day);
+                prev_candle = Some(candle);
             }
 
-            let mut date_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
-            date_spans.push(Span::styled(
-                date_line.iter().collect::<String>(),
-                Style::default().fg(Color::Rgb(120, 120, 120)),
+            let mut time_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
+            time_spans.push(Span::styled(
+                time_line.iter().collect::<String>(),
+                Style::default().fg(Color::Gray),
             ));
-            lines.push(Line::from(date_spans));
+            lines.push(Line::from(time_spans));
+        } else {
+            // D1/W1 : ligne vide
+            let empty_spans = vec![Span::raw(format!("{:>width$}", "", width = (self.y_axis_width + self.width) as usize))];
+            lines.push(Line::from(empty_spans));
         }
+
+        // ========================================
+        // Ligne 3 : Dates (DD/MM, Month or YYYY)
+        // ========================================
+        let mut date_line = vec![' '; self.width as usize];
+        let mut prev_candle: Option<&OHLC> = None;
+
+        // Pour la ligne des dates, toujours utiliser DayChanges si RoundHours
+        // Sinon conserver la stratégie choisie
+        let date_strategy = match label_strategy {
+            LabelStrategy::RoundHours { .. } => LabelStrategy::DayChanges,
+            other => other,
+        };
+
+        for (candle, pos) in visible.iter().zip(positions.iter()) {
+
+            if Self::should_show_label(candle, prev_candle, date_strategy) {
+                let date_label = candle.timestamp.format(date_format).to_string();
+
+                // Centre la date sur la position du chandelier
+                let date_start = pos.column.saturating_sub(date_label.len() / 2);
+                let date_end = (date_start + date_label.len()).min(date_line.len());
+
+                // Vérifie qu'on n'écrase pas une date déjà placée
+                let has_overlap = (date_start..date_end).any(|idx| date_line[idx] != ' ');
+
+                if !has_overlap {
+                    for (j, ch) in date_label.chars().enumerate() {
+                        let idx = date_start + j;
+                        if idx < date_end {
+                            date_line[idx] = ch;
+                        }
+                    }
+                }
+            }
+
+            prev_candle = Some(candle);
+        }
+
+        let mut date_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
+        date_spans.push(Span::styled(
+            date_line.iter().collect::<String>(),
+            Style::default().fg(Color::Rgb(120, 120, 120)),
+        ));
+        lines.push(Line::from(date_spans));
 
         lines
     }

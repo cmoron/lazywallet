@@ -16,5 +16,5 @@ pub mod watchlist_item; // Déclaration du module watchlist_item (fichier watchl
 // Au lieu de : use lazywallet::models::ticker::Ticker;
 // On peut faire : use lazywallet::models::Ticker;
 pub use ticker::Ticker;
-pub use ohlc::{Interval, OHLC, OHLCData, Timeframe};
+pub use ohlc::{Interval, LabelStrategy, OHLC, OHLCData, Timeframe};
 pub use watchlist_item::WatchlistItem;
