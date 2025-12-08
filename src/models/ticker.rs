@@ -18,13 +18,59 @@
 use serde::{Deserialize, Serialize};
 
 /// Type d'actif financier
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TickerType {
     Stock,      // Action (ex: AAPL, TSLA)
     Crypto,     // Cryptomonnaie (ex: BTC, ETH)
     ETF,        // Exchange-Traded Fund (ex: SPY, QQQ)
     Index,      // Indice (ex: ^GSPC, ^DJI)
     Forex,      // Devise (ex: EURUSD)
+}
+
+impl TickerType {
+    /// Détecte automatiquement le type d'actif depuis le symbole
+    ///
+    /// CONCEPT : Pattern matching sur les conventions Yahoo Finance
+    /// - Crypto : suffixe "-USD", "-USDT", "-EUR"
+    /// - Index : préfixe "^" (ex: ^GSPC, ^DJI)
+    /// - Forex : contient "=" (ex: EURUSD=X)
+    /// - ETF : suffixes connus (SPY, QQQ, VOO, etc.)
+    /// - Stock : par défaut
+    ///
+    /// AVANTAGE : Robuste aux changements d'heures de marché
+    /// (ex: si NASDAQ passe en 24h/24, la détection reste valide)
+    pub fn from_symbol(symbol: &str) -> Self {
+        let symbol_upper = symbol.to_uppercase();
+
+        // Crypto : suffixes Yahoo Finance
+        if symbol_upper.ends_with("-USD")
+            || symbol_upper.ends_with("-USDT")
+            || symbol_upper.ends_with("-EUR")
+            || symbol_upper.ends_with("-BTC")
+        {
+            return TickerType::Crypto;
+        }
+
+        // Index : préfixe ^
+        if symbol_upper.starts_with('^') {
+            return TickerType::Index;
+        }
+
+        // Forex : contient =
+        if symbol_upper.contains('=') {
+            return TickerType::Forex;
+        }
+
+        // ETF : liste des ETF majeurs connus
+        // Note: liste non exhaustive, améliorer si besoin
+        let etf_symbols = ["SPY", "QQQ", "VOO", "VTI", "IWM", "EFA", "GLD", "SLV"];
+        if etf_symbols.contains(&symbol_upper.as_str()) {
+            return TickerType::ETF;
+        }
+
+        // Par défaut : Stock
+        TickerType::Stock
+    }
 }
 
 /// Ticker représentant un symbole boursier

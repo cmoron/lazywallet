@@ -233,7 +233,11 @@ impl Interval {
     /// - Ligne 1 : tick marks │
     /// - Ligne 2 : heures (ou vide)
     /// - Ligne 3 : dates
-    pub fn x_axis_format(&self) -> AxisFormats {
+    pub fn x_axis_format(&self, ticker_type: &crate::models::TickerType) -> AxisFormats {
+        // Pour l'instant, on garde les stratégies actuelles
+        // TODO: Adapter les stratégies selon ticker_type (Stock vs Crypto)
+        let _ = ticker_type; // Évite warning unused
+
         match self {
             Interval::M5 => AxisFormats {
                 time_format: Some("%H:%M"),
@@ -433,6 +437,10 @@ pub struct OHLCData {
     /// Période de temps totale affichée
     pub timeframe: Timeframe,
 
+    /// Type d'actif (Stock, Crypto, ETF, Index, Forex)
+    /// Permet d'adapter les stratégies d'affichage selon le marché
+    pub ticker_type: crate::models::TickerType,
+
     /// Liste des chandelles, triées par timestamp croissant
     /// CONCEPT RUST : Ownership
     /// - OHLCData possède le Vec
@@ -443,11 +451,15 @@ pub struct OHLCData {
 
 impl OHLCData {
     /// Crée une nouvelle collection OHLC vide avec interval et timeframe spécifiques
+    ///
+    /// Le ticker_type est détecté automatiquement depuis le symbole
     pub fn new(symbol: String, interval: Interval, timeframe: Timeframe) -> Self {
+        let ticker_type = crate::models::TickerType::from_symbol(&symbol);
         Self {
             symbol,
             interval,
             timeframe,
+            ticker_type,
             candles: Vec::new(),
         }
     }
