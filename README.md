@@ -4,9 +4,9 @@ A fast, lightweight Terminal User Interface (TUI) for tracking cryptocurrency an
 
 ## ✨ Features
 
-- **Market Data**: Fetches prices and OHLC history from the Yahoo Finance chart API (on startup, on add, and on interval change — no periodic refresh yet)
-- **Interactive Watchlist**: Track multiple tickers with daily change percentages
-- **Beautiful Candlestick Charts**: Unicode-based chart visualization directly in your terminal
+- **Market Data**: Prices and OHLC history from the Yahoo Finance chart API, refreshed every 60 s (or on `r`)
+- **Persistent Watchlist**: Stocks, ETFs, crypto, forex and indices, with the change since the previous session close
+- **Responsive Candlestick Charts**: Unicode charts that use the whole terminal — a wider window shows more history
 - **Multiple Timeframes**: Switch between 5m, 15m, 30m, 1h, 4h, 1d, and 1w intervals
 - **Vim-inspired Navigation**: Efficient keyboard shortcuts for power users
 - **Safe Operations**: Two-step confirmation for quit and delete actions
@@ -38,7 +38,7 @@ cargo run
 ./target/release/lazywallet
 ```
 
-The application starts with a hardcoded watchlist (`AAPL`, `TSLA`, `BTC-USD`), loaded before the UI appears. The watchlist is not persisted: tickers you add or delete are lost on exit.
+The UI appears immediately and prices fill in as they arrive. The watchlist is stored in `~/.config/lazywallet/watchlist.txt` (one symbol per line, editable by hand); on first run it contains `AAPL`, `TSLA` and `BTC-USD`.
 
 ### Keyboard Shortcuts
 
@@ -51,7 +51,9 @@ The application starts with a hardcoded watchlist (`AAPL`, `TSLA`, `BTC-USD`), l
 | `↑` / `k` | Navigate up in the list |
 | `↓` / `j` | Navigate down in the list |
 | `Enter` | Open candlestick chart for selected ticker |
+| `r` | Refresh all prices |
 | `q` | Quit application (requires confirmation) |
+| `Ctrl+C` | Quit immediately (any screen) |
 
 #### Chart View
 
@@ -60,6 +62,7 @@ The application starts with a hardcoded watchlist (`AAPL`, `TSLA`, `BTC-USD`), l
 | `h` | Switch to previous interval (cycle: 5m → 15m → 30m → 1h → 4h → 1d → 1w) |
 | `l` | Switch to next interval |
 | `ESC` / `Space` | Return to dashboard |
+| `r` | Refresh |
 | `q` | Quit application (requires confirmation) |
 
 #### Input Mode (Adding Ticker)
@@ -70,7 +73,7 @@ The application starts with a hardcoded watchlist (`AAPL`, `TSLA`, `BTC-USD`), l
 | `ESC` | Cancel input |
 | `Backspace` | Delete last character |
 
-Accepted characters: letters, digits, `-` and `.`.
+Accepted characters: letters, digits, `-`, `.`, `=` and `^` (typed letters are upper-cased).
 
 ### Supported Tickers
 
@@ -78,9 +81,11 @@ LazyWallet supports any ticker available on Yahoo Finance:
 
 - **Stocks**: `AAPL`, `GOOGL`, `TSLA`, `MSFT`, etc.
 - **Cryptocurrencies**: `BTC-USD`, `ETH-USD`, `SOL-USD`, etc.
-- **ETFs**: `SPY`, `VOO`, etc.
+- **ETFs**: `SPY`, `QQQ`, `VOO`, etc.
+- **Forex**: `EURUSD=X`, `GBPUSD=X`, etc.
+- **Indices**: `^GSPC`, `^FCHI`, etc.
 
-Forex (`EURUSD=X`) and index (`^GSPC`) symbols exist on Yahoo but cannot be typed yet (`=` and `^` are rejected by the input), and tickers containing `Q` (e.g. `QQQ`) currently trigger the quit shortcut — see Known Issues.
+Unknown symbols are rejected with a message in the status bar.
 
 ## 🎨 Interface
 
@@ -93,11 +98,11 @@ The main dashboard displays your watchlist with real-time prices, daily changes,
 ![Chart](docs/images/chart.png)
 
 Beautiful Unicode candlestick charts with:
-- Green candles for bullish periods (close > open)
-- Red candles for bearish periods (close < open)
-- Dynamic price and date axes
-- Multiple timeframe support (5m, 15m, 30m, 1h, 4h, 1d, 1w)
-- Perfect alignment between candles and timeline
+- Green candles for bullish periods (close ≥ open), red for bearish ones
+- Round price ticks on a right-hand axis, with the last price highlighted
+- A time axis that picks the finest labels that fit (5 min to 10 years), in the exchange's local time
+- One column per candle on narrow terminals, candle + gap on wide ones; the most recent candles always touch the price axis
+- Works down to 30×8 characters
 
 ## 🛠️ Tech Stack
 
@@ -115,24 +120,22 @@ Beautiful Unicode candlestick charts with:
 
 ```
 src/
-├── api/
-│   ├── mod.rs
-│   └── yahoo.rs          # Yahoo Finance API integration
+├── api/yahoo.rs          # Yahoo Finance client (shared, 10 s timeout)
 ├── models/
-│   ├── mod.rs
-│   ├── ohlc.rs           # OHLC data structures and intervals
-│   ├── ticker.rs         # TickerType detection (Ticker struct unused)
-│   └── watchlist_item.rs # Watchlist item with data
+│   ├── ohlc.rs           # Interval, OHLC candles, exchange sessions
+│   └── watchlist_item.rs # Watchlist item, quote, fetched data
 ├── ui/
-│   ├── mod.rs
-│   ├── dashboard.rs      # Main dashboard rendering
-│   ├── chart.rs          # Legacy line chart (unused)
-│   ├── candlestick_text.rs # Unicode candlestick drawing
-│   └── events.rs         # Keyboard event handling
-├── app.rs                # Application state management
-├── lib.rs                # Library root
-└── main.rs               # Entry point and event loop
+│   ├── dashboard.rs      # Watchlist, status bar, input line
+│   ├── events.rs         # Key handling, routed by screen
+│   └── chart/            # Candlestick widget, price and time axes
+├── app.rs                # Application state
+├── worker.rs             # Network thread (commands → results)
+├── watchlist_file.rs     # Watchlist persistence
+├── lib.rs
+└── main.rs               # Terminal setup and event loop
 ```
+
+See [docs/architecture.md](docs/architecture.md) and [docs/chart-rendering.md](docs/chart-rendering.md).
 
 ## 🔧 Configuration
 
@@ -145,19 +148,19 @@ Logs are written to `./logs/lazywallet.log.YYYY-MM-DD`, relative to the director
 
 ### Intervals and Timeframes
 
-Each interval fetches a fixed history window; the chart then shows at most the last 250 candles:
+Each interval fetches a fixed history window, sized to fill a wide terminal; the chart shows as many of the most recent candles as fit:
 
 | Interval | History fetched |
 |----------|-----------------|
-| 5m  | 7 days |
-| 15m | 14 days |
-| 30m (default) | 30 days |
+| 5m  | 14 days |
+| 15m | 30 days |
+| 30m (default) | 58 days |
 | 1h  | 6 months |
 | 4h  | 1 year |
 | 1d  | 2 years |
-| 1w  | 5 years |
+| 1w  | 10 years |
 
-Times and dates on the chart axis are shown in UTC.
+Chart times are in the exchange's timezone (New York for US stocks, UTC for crypto).
 
 ## 🤝 Contributing
 
@@ -173,11 +176,14 @@ cd lazywallet
 # Run in development mode with logs
 cargo run
 
-# Run tests (the Yahoo test hits the network)
+# Run tests (offline)
 cargo test
 
-# Check for warnings
-cargo clippy
+# Also run the test that calls Yahoo Finance
+cargo test -- --ignored
+
+# Lint (pedantic, configured in Cargo.toml)
+cargo clippy --all-targets -- -D warnings
 
 # Format code
 cargo fmt
@@ -195,20 +201,11 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 🐛 Known Issues
 
-- Typing `q`/`Q` in the add-ticker prompt triggers the quit confirmation (twice = the app exits).
-- `=` and `^` cannot be typed, so forex and index tickers cannot be added.
-- The chart draws 2 columns wider than its frame: the most recent candles on the right edge are clipped.
-- When there are more candles (up to 250) than columns, candles overwrite each other instead of being dropped from the left.
-- The 1h chart shows almost no date labels (none at all for 24/7 markets such as crypto).
-- The interval is global: opening another ticker's chart after changing the interval shows `30m → 1d ⚠️` and does not reload.
-- The dashboard "daily" change is computed from whatever interval was last loaded for that ticker (on 1w it is a weekly change), and from the day's first open rather than the previous close.
-- Fetch and add errors are only logged, never shown in the UI; HTTP requests have no timeout.
-- `cargo test` has 2 failing tests (stale expectations in `models::ohlc`).
+- The exchange timezone is a fixed offset taken at load time: across a daylight-saving change, older intraday labels are off by one hour.
 - Market data may be delayed, and some tickers may not be available depending on your region.
 
 ## 🚧 Roadmap
 
-- [ ] Persist watchlist between sessions
 - [ ] Customizable color themes
 - [ ] Price alerts and notifications
 - [ ] Portfolio tracking with cost basis

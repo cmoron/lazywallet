@@ -5,49 +5,50 @@ une watchlist et des chandeliers depuis l'API chart de Yahoo Finance. Projet
 d'apprentissage de Rust, développé en solo par Cyril.
 
 Lire [`docs/architecture.md`](docs/architecture.md) avant de toucher au flux
-thread principal ↔ worker, à `App` ou à `handle_event`. Lire
-[`docs/candlestick-alignment.md`](docs/candlestick-alignment.md) avant de toucher au
-rendu du graphique ou à l'axe X.
+thread principal ↔ worker, à `App` ou à `handle_key`. Lire
+[`docs/chart-rendering.md`](docs/chart-rendering.md) avant de toucher au graphique
+ou à ses axes.
 
 ## Commandes
 
 ```bash
-cargo build
-cargo test                       # inclut un test réseau vers Yahoo (passe même hors ligne)
-cargo clippy --all-targets -- -W clippy::pedantic
+cargo test                                  # hors ligne
+cargo test -- --ignored                     # + le test qui appelle Yahoo
+cargo clippy --all-targets -- -D warnings   # pedantic, réglé dans Cargo.toml
 cargo fmt
-cargo run                        # TUI plein écran : lancer dans un vrai terminal
+cargo run                                   # TUI plein écran
 ```
 
-Un changement est fini quand `cargo test`, `cargo clippy` et `cargo fmt --check`
-passent. État au 2026-09-22 (`8878ec3`) : 2 tests en échec dans `models::ohlc`
-(attentes de timeframes périmées), clippy pedantic ~265 warnings, et `cargo fmt`
-jamais appliqué. Ce sont des dettes connues, pas des régressions ; ne pas les
-mélanger à un autre changement.
+Un changement est fini quand `cargo test`, `cargo clippy --all-targets -- -D warnings`
+et `cargo fmt --check` passent.
 
 ## Conventions
 
 - Commentaires et doc comments en **français**, style pédagogique (`// CONCEPT RUST : ...`) :
   c'est voulu, Cyril apprend Rust avec ce code. Garder ce ton sur le code modifié.
 - README et messages de commit en anglais, Conventional Commits avec scope
-  (`fix(ui): ...`, `feat(data): ...`).
+  (`fix(ui): ...`, `feat(chart): ...`).
 - Erreurs : `anyhow::Result` + `.context(...)` ; les erreurs visibles par l'utilisateur
-  doivent atteindre l'UI, pas seulement `tracing::error!`.
-- Rendu du graphique : toute couche (chandeliers, ticks, labels) utilise les colonnes
-  de `compute_candle_positions()`, jamais un calcul d'espacement local.
+  passent par `App::set_error`, pas seulement `tracing::error!`. Les messages
+  d'erreur Yahoo commencent par le symbole.
+- Les transitions de `App` qui ont besoin du réseau retournent des `AppCommand` ;
+  seul `main.rs` les envoie au worker.
 
 ## Pièges
 
-- `handle_event` (`src/main.rs`) est un seul `match` à gardes évalué dans l'ordre :
-  un nouveau raccourci doit être gardé par l'écran (`app.is_on_dashboard()`, etc.),
-  sinon il capture aussi les touches tapées en saisie.
-- Les résultats du worker ciblent un item par **index** de watchlist ; toute opération
-  qui réordonne ou supprime des items doit en tenir compte.
+- Le worker renvoie **exactement un** `AppResult` par `AppCommand` : `App::pending`
+  (indicateur de chargement, blocage du refresh auto) en dépend.
+- `handle_key` route d'abord par écran : en `InputMode`, toute touche va à la
+  saisie. Un nouveau raccourci se place dans la branche de son écran.
+- `CandleChart` ne dessine que dans le `Rect` reçu ; l'écran lui passe
+  `block.inner(area)`. Toute couche du graphique réutilise les colonnes de
+  `visible_columns`.
+- Les heures du graphique sont celles de la place (`OHLCData::local_time`), pas UTC
+  ni l'heure locale de la machine.
 - `logs/` est relatif au répertoire de lancement et ignoré par git ; `RUST_LOG`
   surcharge le filtre `lazywallet=debug,info`.
-- Le module `ui/chart.rs` et la struct `Ticker` sont du code mort : ne pas les
-  étendre, le rendu actif est `ui/candlestick_text.rs`.
-- `.specify/` est un gabarit spec-kit non rempli et non suivi par git ; il ne décrit
-  pas le projet.
-- Tester le rendu sans terminal : `ratatui::backend::TestBackend`, ou appeler
-  `CandlestickRenderer::render_lines()` et inspecter les `Line`.
+- Tester un rendu sans terminal : `ratatui::backend::TestBackend`, ou rendre le
+  widget dans un `Buffer::empty(area)` et lire les cellules.
+- Piloter le TUI réel dans tmux : toujours un serveur dédié (`tmux -L lw ...`,
+  `tmux -L lw kill-server`). Un `tmux kill-server` nu tue aussi la session de
+  l'agent.
