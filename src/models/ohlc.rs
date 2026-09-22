@@ -86,6 +86,7 @@ impl Interval {
     /// CONCEPT RUST : `self` par valeur
     /// - Interval est Copy : le prendre par valeur ne coûte rien
     /// - Permet d'utiliser `Interval::next` comme `fn(Interval) -> Interval`
+    #[must_use]
     pub fn next(self) -> Interval {
         match self {
             Interval::M5 => Interval::M15,
@@ -99,6 +100,7 @@ impl Interval {
     }
 
     /// Retourne l'intervalle précédent (cycle)
+    #[must_use]
     pub fn previous(self) -> Interval {
         match self {
             Interval::M5 => Interval::W1, // Boucle

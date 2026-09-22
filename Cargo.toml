@@ -22,8 +22,8 @@ serde_json = "1.0"  # Implémentation JSON pour serde
 
 # === Gestion des dates ===
 # Chrono : manipulation de dates et timestamps
-# Feature "serde" : permet de sérialiser/désérialiser les dates
-chrono = { version = "0.4", features = ["serde"] }
+# (sans feature serde : les dates ne sont jamais sérialisées)
+chrono = "0.4"
 
 # === Gestion d'erreurs ===
 # Anyhow : error handling ergonomique avec contexte
@@ -44,7 +44,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 
 # Dirs : chemins de répertoires cross-platform
-# Utilisé pour trouver le bon emplacement des logs (~/.local/share/ sur Linux)
+# Utilisé pour le fichier de watchlist (~/.config/lazywallet/ sur Linux)
 dirs = "5.0"
 
 # === Interface TUI (Terminal User Interface) ===

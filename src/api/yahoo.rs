@@ -81,6 +81,9 @@ struct QuoteArrays {
 /// Client HTTP partagé par tous les appels (pool de connexions réutilisé)
 ///
 /// CONCEPT : Timeout obligatoire — sans lui, une requête bloquée fige le worker.
+///
+/// # Errors
+/// Si le backend TLS ne peut pas être initialisé.
 pub fn http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
@@ -92,6 +95,10 @@ pub fn http_client() -> Result<reqwest::Client> {
 /// Récupère chandelles, prix courant et métadonnées d'un ticker
 ///
 /// Les messages d'erreur commencent par le symbole : ils sont affichés tels quels.
+///
+/// # Errors
+/// Réseau injoignable ou timeout, symbole inconnu (404), autre statut HTTP,
+/// JSON illisible, ou aucune chandelle exploitable.
 #[instrument(skip(client))]
 pub async fn fetch_ticker_data(
     client: &reqwest::Client,

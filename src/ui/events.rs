@@ -27,6 +27,9 @@ impl EventHandler {
     /// None si rien n'arrive, si c'est un relâchement de touche (certains OS
     /// envoient Press ET Release) ou un autre événement (resize : le prochain
     /// rendu s'adapte de lui-même).
+    ///
+    /// # Errors
+    /// Si le terminal ne peut pas être lu.
     pub fn next(&self) -> Result<Option<KeyEvent>> {
         if !event::poll(Duration::from_millis(250))? {
             return Ok(None);

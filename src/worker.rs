@@ -43,6 +43,9 @@ pub enum AppResult {
 ///
 /// Le runtime et le client sont créés avant le thread : une erreur remonte à
 /// `main()` au lieu de faire paniquer le worker.
+///
+/// # Errors
+/// Si le runtime tokio ou le client HTTP ne peuvent pas être créés.
 pub fn spawn_worker(commands: Receiver<AppCommand>, results: Sender<AppResult>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

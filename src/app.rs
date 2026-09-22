@@ -21,7 +21,7 @@ use crate::watchlist_file;
 use crate::worker::{AppCommand, AppResult};
 
 /// Intervalle entre deux rafraîchissements automatiques des prix
-pub const REFRESH_EVERY: Duration = Duration::from_secs(60);
+pub const REFRESH_EVERY: Duration = Duration::from_mins(1);
 
 /// Durée d'affichage d'un message dans la barre d'état
 pub const STATUS_TTL: Duration = Duration::from_secs(5);

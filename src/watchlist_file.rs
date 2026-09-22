@@ -14,6 +14,9 @@ use anyhow::{Context, Result};
 pub const DEFAULT_SYMBOLS: [&str; 3] = ["AAPL", "TSLA", "BTC-USD"];
 
 /// `~/.config/lazywallet/watchlist.txt` sous Linux (via la crate `dirs`)
+///
+/// # Errors
+/// Si le système ne fournit pas de répertoire de configuration.
 pub fn default_path() -> Result<PathBuf> {
     let config = dirs::config_dir().context("Répertoire de configuration introuvable")?;
     Ok(config.join("lazywallet").join("watchlist.txt"))
@@ -24,6 +27,9 @@ pub fn default_path() -> Result<PathBuf> {
 /// CONCEPT RUST : match sur ErrorKind
 /// - Fichier absent = premier lancement, pas une erreur
 /// - Toute autre erreur (droits...) remonte avec le chemin en contexte
+///
+/// # Errors
+/// Si le fichier existe mais ne peut pas être lu.
 pub fn load(path: &Path) -> Result<Vec<String>> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -46,6 +52,9 @@ pub fn load(path: &Path) -> Result<Vec<String>> {
 }
 
 /// Écrit la watchlist, en créant le dossier si besoin
+///
+/// # Errors
+/// Si le dossier ne peut pas être créé ou le fichier écrit.
 pub fn save(path: &Path, symbols: &[&str]) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("Création de {}", dir.display()))?;

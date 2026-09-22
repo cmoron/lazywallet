@@ -115,24 +115,21 @@ fn render_watchlist(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(index, item)| {
             let name = truncate_with_ellipsis(&item.name, 20);
-            let (price, change, color) = match (item.current_price(), item.change_percent()) {
-                (Some(price), change) => {
-                    let change = change.map_or_else(String::new, |c| {
-                        let arrow = if c >= 0.0 { "▲" } else { "▼" };
-                        format!("{arrow} {c:+.2}%")
-                    });
-                    let color = if item.is_positive() {
-                        Color::Green
-                    } else {
-                        Color::Red
-                    };
-                    (item.format_price(price), change, color)
-                }
+            let (price, change, color) = if let Some(price) = item.current_price() {
+                let change = item.change_percent().map_or_else(String::new, |c| {
+                    let arrow = if c >= 0.0 { "▲" } else { "▼" };
+                    format!("{arrow} {c:+.2}%")
+                });
+                let color = if item.is_positive() {
+                    Color::Green
+                } else {
+                    Color::Red
+                };
+                (item.format_price(price), change, color)
+            } else {
                 // Pas encore de prix : en cours de chargement, ou échec (voir barre d'état)
-                (None, _) => {
-                    let placeholder = if app.is_loading() { "…" } else { "N/A" };
-                    (placeholder.to_string(), String::new(), Color::Gray)
-                }
+                let placeholder = if app.is_loading() { "…" } else { "N/A" };
+                (placeholder.to_string(), String::new(), Color::Gray)
             };
             let line = format!(
                 " {:<10} {:<20} {:>16}  {}",

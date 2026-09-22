@@ -178,7 +178,7 @@ mod tests {
         let mut out = Vec::new();
         let mut t = start;
         while out.len() < n {
-            let open = market_hours.map_or(true, |(from, to)| {
+            let open = market_hours.is_none_or(|(from, to)| {
                 (from..to).contains(&t.hour()) && t.weekday().num_days_from_monday() < 5
             });
             if open {
