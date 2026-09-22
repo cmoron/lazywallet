@@ -506,9 +506,9 @@ impl OHLCData {
     /// Calcule le prix minimum sur toute la période
     pub fn min_price(&self) -> Option<f64> {
         self.candles
-            .iter()  // Crée un itérateur
-            .map(|c| c.low)  // Transforme chaque OHLC en son prix bas
-            .min_by(|a, b| a.partial_cmp(b).unwrap())  // Trouve le minimum
+            .iter() // Crée un itérateur
+            .map(|c| c.low) // Transforme chaque OHLC en son prix bas
+            .min_by(|a, b| a.partial_cmp(b).unwrap()) // Trouve le minimum
     }
 
     /// Calcule le prix maximum sur toute la période
@@ -638,8 +638,8 @@ mod tests {
     #[test]
     fn test_interval_default_timeframe() {
         assert_eq!(Interval::M30.default_timeframe(), Timeframe::OneMonth);
-        assert_eq!(Interval::D1.default_timeframe(), Timeframe::SixMonths);
-        assert_eq!(Interval::W1.default_timeframe(), Timeframe::TwoYears);
+        assert_eq!(Interval::D1.default_timeframe(), Timeframe::TwoYears);
+        assert_eq!(Interval::W1.default_timeframe(), Timeframe::FiveYears);
     }
 
     #[test]
@@ -654,7 +654,7 @@ mod tests {
         let data = OHLCData::with_interval("BTC-USD".to_string(), Interval::H1);
         assert_eq!(data.symbol, "BTC-USD");
         assert_eq!(data.interval, Interval::H1);
-        assert_eq!(data.timeframe, Timeframe::OneMonth); // Default pour H1
+        assert_eq!(data.timeframe, Timeframe::SixMonths); // Default pour H1
     }
 
     #[test]

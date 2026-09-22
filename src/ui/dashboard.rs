@@ -106,12 +106,12 @@ fn create_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),      // Header : 3 lignes
-            Constraint::Min(0),          // Content : tout le reste
-            Constraint::Length(3),       // Footer : 3 lignes
+            Constraint::Length(3), // Header : 3 lignes
+            Constraint::Min(0),    // Content : tout le reste
+            Constraint::Length(3), // Footer : 3 lignes
         ])
         .split(area)
-        .to_vec()  // Convertit Rc<[Rect]> en Vec<Rect>
+        .to_vec() // Convertit Rc<[Rect]> en Vec<Rect>
 }
 
 // ============================================================================
@@ -140,14 +140,12 @@ fn render_header(frame: &mut Frame, area: Rect) {
     // - Span : morceau de texte avec style
     // - Line : une ligne composée de Spans
     // - Vec<Line> : paragraphe multi-lignes
-    let text = vec![
-        Line::from(Span::styled(
-            "🚀 Terminal User Interface Mode",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )),
-    ];
+    let text = vec![Line::from(Span::styled(
+        "🚀 Terminal User Interface Mode",
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    ))];
 
     let paragraph = Paragraph::new(text)
         .block(block)
@@ -177,7 +175,7 @@ fn render_header(frame: &mut Frame, area: Rect) {
 /// * String tronquée avec "…" si elle dépasse max_len, sinon texte original
 ///
 /// # Exemple
-/// ```
+/// ```text
 /// truncate_with_ellipsis("Microsoft Corporation", 20) // "Microsoft Corporat…"
 /// truncate_with_ellipsis("Apple Inc.", 20)            // "Apple Inc."
 /// ```
@@ -269,7 +267,10 @@ fn render_main_content(frame: &mut Frame, app: &App, area: Rect) {
                 // Pas de données : affiche "Loading..."
                 // Tronque le nom à 20 caractères pour cohérence
                 let truncated_name = truncate_with_ellipsis(&item.name, 20);
-                format!(" {:<8} {:<20} {:>12}", item.symbol, truncated_name, "Loading...")
+                format!(
+                    " {:<8} {:<20} {:>12}",
+                    item.symbol, truncated_name, "Loading..."
+                )
             };
 
             // Crée un ListItem avec style
@@ -280,7 +281,7 @@ fn render_main_content(frame: &mut Frame, app: &App, area: Rect) {
                 list_item = list_item.style(
                     style
                         .add_modifier(Modifier::BOLD)
-                        .add_modifier(Modifier::REVERSED),  // Inverse les couleurs
+                        .add_modifier(Modifier::REVERSED), // Inverse les couleurs
                 );
             }
 
@@ -311,14 +312,18 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let shortcuts = if app.is_awaiting_delete_confirmation() {
         // Message de confirmation de suppression
         // CONCEPT : Style avec BLINK pour attirer l'attention
-        let ticker_name = app.watchlist.get(app.selected_index)
+        let ticker_name = app
+            .watchlist
+            .get(app.selected_index)
             .map(|item| item.symbol.as_str())
             .unwrap_or("?");
 
         Line::from(vec![
             Span::styled(
                 "⚠  Appuyez sur ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "[d]",
@@ -328,8 +333,13 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::SLOW_BLINK),
             ),
             Span::styled(
-                format!(" à nouveau pour supprimer {} ou autre touche pour annuler ⚠", ticker_name),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                format!(
+                    " à nouveau pour supprimer {} ou autre touche pour annuler ⚠",
+                    ticker_name
+                ),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
         ])
     } else if app.is_awaiting_quit_confirmation() {
@@ -338,7 +348,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(
                 "⚠  Appuyez sur ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "[q]",
@@ -349,7 +361,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(
                 " à nouveau pour quitter, ou n'importe quelle autre touche pour annuler ⚠",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
         ])
     } else {
@@ -357,15 +371,38 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         // CONCEPT RATATUI : Spans multiples dans une Line
         // - Permet d'avoir plusieurs couleurs sur une même ligne
         Line::from(vec![
-            Span::styled("[q]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[q]",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Quit  "),
-            Span::styled("[↑↓ / j k]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[↑↓ / j k]",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Navigate  "),
-            Span::styled("[Enter]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[Enter]",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Chart  "),
-            Span::styled("[a]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[a]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Add  "),
-            Span::styled("[d]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[d]",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Delete"),
         ])
     };
@@ -411,22 +448,25 @@ fn render_input_footer(frame: &mut Frame, app: &App, area: Rect) {
     let input_line = Line::from(vec![
         Span::styled(
             &app.input_prompt,
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            &app.input_buffer,
-            Style::default().fg(Color::White),
-        ),
+        Span::styled(&app.input_buffer, Style::default().fg(Color::White)),
         Span::styled(
             "█", // Curseur
-            Style::default().fg(Color::White).add_modifier(Modifier::SLOW_BLINK),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::SLOW_BLINK),
         ),
     ]);
 
     let help_line = Line::from(vec![
         Span::styled(
             "[Enter]",
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" Confirm  "),
         Span::styled(
