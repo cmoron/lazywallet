@@ -9,12 +9,10 @@
 // ============================================================================
 
 pub mod ohlc; // Déclaration du module ohlc (fichier ohlc.rs)
-pub mod ticker; // Déclaration du module ticker (fichier ticker.rs)
 pub mod watchlist_item; // Déclaration du module watchlist_item (fichier watchlist_item.rs)
 
 // Re-export des structures principales pour simplifier les imports
-// Au lieu de : use lazywallet::models::ticker::Ticker;
-// On peut faire : use lazywallet::models::Ticker;
-pub use ohlc::{Interval, LabelStrategy, OHLCData, OHLC};
-pub use ticker::TickerType;
+// Au lieu de : use lazywallet::models::ohlc::Interval;
+// On peut faire : use lazywallet::models::Interval;
+pub use ohlc::{Interval, OHLCData, OHLC};
 pub use watchlist_item::{FetchedTicker, Quote, WatchlistItem};

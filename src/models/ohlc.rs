@@ -34,38 +34,6 @@ pub enum Interval {
     W1,
 }
 
-/// Stratégie d'affichage des labels sur l'axe X
-///
-/// CONCEPT : Labels intelligents par intervalle
-/// - Chaque intervalle a une stratégie adaptée (heures rondes, jours, semaines, etc.)
-/// - Évite les labels bizarres (14:17) au profit de valeurs rondes (15:00)
-#[derive(Debug, Clone, Copy)]
-pub enum LabelStrategy {
-    /// Heures rondes (00:00, 06:00, 12:00, 18:00)
-    RoundHours { interval_hours: u32 },
-    /// Changements de jour (affiche à chaque nouveau jour)
-    DayChanges,
-    /// Jours réguliers (tous les N jours)
-    RegularDays { interval_days: u32 },
-    /// Semaines / périodes longues
-    RegularWeeks { interval_days: u32 },
-    /// Mois / trimestres
-    RegularMonths { interval_months: u32 },
-    /// Années / périodes très longues
-    RegularYears { interval_years: u32 },
-}
-
-/// Formats pour l'axe X (heures et dates séparées)
-#[derive(Debug, Clone, Copy)]
-pub struct AxisFormats {
-    /// Format pour la ligne des heures (None pour D1/W1)
-    pub time_format: Option<&'static str>,
-    /// Format pour la ligne des dates
-    pub date_format: &'static str,
-    /// Stratégie d'affichage des labels
-    pub label_strategy: LabelStrategy,
-}
-
 impl Interval {
     /// Convertit l'intervalle en string pour l'API Yahoo Finance
     ///
@@ -110,45 +78,6 @@ impl Interval {
             Interval::H4 => 365,
             Interval::D1 => 730,
             Interval::W1 => 3650,
-        }
-    }
-
-    /// Formats et stratégie de labels pour l'axe X (ancien renderer)
-    pub fn x_axis_format(self, ticker_type: &crate::models::TickerType) -> AxisFormats {
-        // TickerType n'est pas encore exploité
-        let _ = ticker_type;
-
-        match self {
-            Interval::M5 => AxisFormats {
-                time_format: Some("%H:%M"),
-                date_format: "%d/%m",
-                label_strategy: LabelStrategy::RoundHours { interval_hours: 1 },
-            },
-            Interval::M15 => AxisFormats {
-                time_format: Some("%H:%M"),
-                date_format: "%d/%m",
-                label_strategy: LabelStrategy::RoundHours { interval_hours: 3 },
-            },
-            Interval::M30 => AxisFormats {
-                time_format: Some("%H:%M"),
-                date_format: "%d/%m",
-                label_strategy: LabelStrategy::RoundHours { interval_hours: 6 },
-            },
-            Interval::H1 => AxisFormats {
-                time_format: None,
-                date_format: "%d/%m",
-                label_strategy: LabelStrategy::RegularDays { interval_days: 2 },
-            },
-            Interval::H4 | Interval::D1 => AxisFormats {
-                time_format: None,
-                date_format: "%b",
-                label_strategy: LabelStrategy::RegularMonths { interval_months: 1 },
-            },
-            Interval::W1 => AxisFormats {
-                time_format: None,
-                date_format: "%Y",
-                label_strategy: LabelStrategy::RegularYears { interval_years: 1 },
-            },
         }
     }
 

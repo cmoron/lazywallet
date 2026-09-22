@@ -19,14 +19,14 @@ use ratatui::{
 };
 
 use crate::app::{App, Screen, REFRESH_EVERY};
-use crate::ui::candlestick_text;
+use crate::ui::chart::render_chart_screen;
 
 /// Dessine l'écran courant
 ///
 /// CONCEPT RUST : Match sur enum pour router (state machine)
 pub fn render(frame: &mut Frame, app: &App) {
     match app.current_screen {
-        Screen::ChartView => candlestick_text::render_candlestick_chart(frame, app, frame.size()),
+        Screen::ChartView => render_chart_screen(frame, app),
         Screen::Dashboard | Screen::InputMode => render_dashboard(frame, app),
     }
 }
