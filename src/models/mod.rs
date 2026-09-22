@@ -8,13 +8,13 @@
 // - Sans "pub", le module serait privé au crate
 // ============================================================================
 
-pub mod ticker;         // Déclaration du module ticker (fichier ticker.rs)
-pub mod ohlc;           // Déclaration du module ohlc (fichier ohlc.rs)
+pub mod ohlc; // Déclaration du module ohlc (fichier ohlc.rs)
+pub mod ticker; // Déclaration du module ticker (fichier ticker.rs)
 pub mod watchlist_item; // Déclaration du module watchlist_item (fichier watchlist_item.rs)
 
 // Re-export des structures principales pour simplifier les imports
 // Au lieu de : use lazywallet::models::ticker::Ticker;
 // On peut faire : use lazywallet::models::Ticker;
+pub use ohlc::{Interval, LabelStrategy, OHLCData, Timeframe, OHLC};
 pub use ticker::{Ticker, TickerType};
-pub use ohlc::{Interval, LabelStrategy, OHLC, OHLCData, Timeframe};
 pub use watchlist_item::WatchlistItem;

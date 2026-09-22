@@ -49,7 +49,7 @@ struct ChartResult {
 
 /// Métadonnées du ticker
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]  // Convertit automatiquement snake_case -> camelCase
+#[serde(rename_all = "camelCase")] // Convertit automatiquement snake_case -> camelCase
 struct Meta {
     symbol: String,
     long_name: Option<String>,
@@ -105,7 +105,10 @@ struct Quote {
 /// - Inclut les paramètres de la fonction dans les logs
 /// - Tous les logs à l'intérieur auront le contexte symbol + interval
 #[instrument(skip(interval), fields(interval = ?interval))]
-pub async fn fetch_ticker_data(symbol: &str, interval: Interval) -> Result<(OHLCData, Option<String>)> {
+pub async fn fetch_ticker_data(
+    symbol: &str,
+    interval: Interval,
+) -> Result<(OHLCData, Option<String>)> {
     // Le timeframe est déterminé automatiquement selon l'intervalle
     let timeframe = interval.default_timeframe();
 
@@ -145,10 +148,7 @@ pub async fn fetch_ticker_data(symbol: &str, interval: Interval) -> Result<(OHLC
     // Vérifie que la réponse est un succès HTTP (200-299)
     if !status.is_success() {
         error!(status = %status, "Yahoo Finance returned error status");
-        anyhow::bail!(
-            "Yahoo Finance a retourné une erreur : HTTP {}",
-            status
-        );
+        anyhow::bail!("Yahoo Finance a retourné une erreur : HTTP {}", status);
     }
 
     // Parse la réponse JSON
@@ -212,8 +212,8 @@ fn parse_yahoo_response(
     let result = yahoo_response
         .chart
         .result
-        .into_iter()  // Consomme le Vec (move)
-        .next()       // Prend le premier élément
+        .into_iter() // Consomme le Vec (move)
+        .next() // Prend le premier élément
         .context("Aucune données retournée par Yahoo Finance")?;
 
     // Extrait le long_name depuis les métadonnées
@@ -225,9 +225,16 @@ fn parse_yahoo_response(
     // Récupère les arrays de données
     // CONCEPT RUST : Option unwrap et default
     let timestamps = result.timestamp.unwrap_or_default();
-    debug!(timestamp_count = timestamps.len(), "Received timestamps from Yahoo");
+    debug!(
+        timestamp_count = timestamps.len(),
+        "Received timestamps from Yahoo"
+    );
 
-    let quote = result.indicators.quote.into_iter().next()
+    let quote = result
+        .indicators
+        .quote
+        .into_iter()
+        .next()
         .context("Pas de données OHLC dans la réponse")?;
 
     let opens = quote.open.unwrap_or_default();
@@ -249,7 +256,7 @@ fn parse_yahoo_response(
             Some(v) => v,
             None => {
                 skipped_count += 1;
-                continue;  // Skip cette chandelle si pas de données
+                continue; // Skip cette chandelle si pas de données
             }
         };
 
@@ -281,18 +288,10 @@ fn parse_yahoo_response(
 
         // Convertit le timestamp Unix en DateTime<Utc>
         // CONCEPT RUST : Result et ? operator
-        let datetime = DateTime::from_timestamp(timestamp, 0)
-            .context("Timestamp invalide")?;
+        let datetime = DateTime::from_timestamp(timestamp, 0).context("Timestamp invalide")?;
 
         // Crée et ajoute la chandelle OHLC
-        ohlc_data.add_candle(OHLC::new(
-            datetime,
-            open,
-            high,
-            low,
-            close,
-            volume,
-        ));
+        ohlc_data.add_candle(OHLC::new(datetime, open, high, low, close, volume));
     }
 
     // Log des statistiques de parsing

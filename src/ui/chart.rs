@@ -59,8 +59,8 @@ pub fn render_chart(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Titre
-            Constraint::Min(0),      // Graphique
+            Constraint::Length(3), // Titre
+            Constraint::Min(0),    // Graphique
         ])
         .split(area)
         .to_vec();
@@ -156,14 +156,15 @@ fn render_chart_graph(
     }
 
     // Calcule les bornes pour les axes
-    let (min_price, max_price) = points.iter().fold(
-        (f64::MAX, f64::MIN),
-        |(min, max), &(_x, y)| (min.min(y), max.max(y)),
-    );
+    let (min_price, max_price) = points
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(min, max), &(_x, y)| {
+            (min.min(y), max.max(y))
+        });
 
     // Ajoute une marge de 5% pour que le graphique respire
     let margin = (max_price - min_price) * 0.05;
-    let y_min = (min_price - margin).max(0.0);  // Ne descend pas en dessous de 0
+    let y_min = (min_price - margin).max(0.0); // Ne descend pas en dessous de 0
     let y_max = max_price + margin;
 
     // Crée le dataset (série de données)
@@ -186,7 +187,7 @@ fn render_chart_graph(
     // - Bar : barres verticales
     let datasets = vec![Dataset::default()
         .name(item.symbol.as_str())
-        .marker(symbols::Marker::Dot)  // Ligne continue avec points connectés
+        .marker(symbols::Marker::Dot) // Ligne continue avec points connectés
         .graph_type(GraphType::Line)
         .style(Style::default().fg(color))
         .data(&points)];
@@ -226,7 +227,11 @@ fn render_chart_graph(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::White))
-                .title(format!(" {} - {} jours ", item.symbol, data.timeframe.to_days())),
+                .title(format!(
+                    " {} - {} jours ",
+                    item.symbol,
+                    data.timeframe.to_days()
+                )),
         )
         .x_axis(x_axis)
         .y_axis(y_axis);
@@ -247,10 +252,7 @@ fn render_no_data(frame: &mut Frame, area: Rect, message: &str) {
 
     let text = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            message,
-            Style::default().fg(Color::Red),
-        )),
+        Line::from(Span::styled(message, Style::default().fg(Color::Red))),
         Line::from(""),
         Line::from(Span::styled(
             "[ESC] Retour",

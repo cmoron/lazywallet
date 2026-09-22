@@ -20,11 +20,11 @@ use serde::{Deserialize, Serialize};
 /// Type d'actif financier
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TickerType {
-    Stock,      // Action (ex: AAPL, TSLA)
-    Crypto,     // Cryptomonnaie (ex: BTC, ETH)
-    ETF,        // Exchange-Traded Fund (ex: SPY, QQQ)
-    Index,      // Indice (ex: ^GSPC, ^DJI)
-    Forex,      // Devise (ex: EURUSD)
+    Stock,  // Action (ex: AAPL, TSLA)
+    Crypto, // Cryptomonnaie (ex: BTC, ETH)
+    ETF,    // Exchange-Traded Fund (ex: SPY, QQQ)
+    Index,  // Indice (ex: ^GSPC, ^DJI)
+    Forex,  // Devise (ex: EURUSD)
 }
 
 impl TickerType {
@@ -137,8 +137,10 @@ impl Ticker {
             None => "".to_string(),
         };
 
-        format!("{:<8} {:<20} {:>12}  {}",
-                self.symbol, self.name, price_str, change_str)
+        format!(
+            "{:<8} {:<20} {:>12}  {}",
+            self.symbol, self.name, price_str, change_str
+        )
     }
 }
 

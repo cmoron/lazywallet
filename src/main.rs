@@ -12,7 +12,7 @@
 // ============================================================================
 
 use std::io;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -55,19 +55,14 @@ enum AppCommand {
     /// CONCEPT : Add ticker with background fetch
     /// - symbol: ticker à ajouter (ex: "GOOGL")
     /// - Les données seront fetchées automatiquement
-    AddTicker {
-        symbol: String,
-    },
+    AddTicker { symbol: String },
 }
 
 /// Résultats renvoyés par le worker thread
 #[derive(Debug)]
 enum AppResult {
     /// Données d'un ticker rechargées avec succès
-    TickerDataLoaded {
-        index: usize,
-        data: OHLCData,
-    },
+    TickerDataLoaded { index: usize, data: OHLCData },
 
     /// Nouveau ticker ajouté avec succès
     TickerAdded {
@@ -84,10 +79,7 @@ enum AppResult {
     },
 
     /// Erreur lors de l'ajout d'un ticker
-    AddError {
-        symbol: String,
-        error: String,
-    },
+    AddError { symbol: String, error: String },
 }
 
 // ============================================================================
@@ -136,7 +128,8 @@ fn init_logging() -> Result<()> {
     // - Rotation::DAILY : nouveau fichier chaque jour
     // - Ancien format : lazywallet.log.2024-01-15
     // - Évite que les logs deviennent trop gros
-    let file_appender = RollingFileAppender::new(Rotation::DAILY, log_dir.clone(), "lazywallet.log");
+    let file_appender =
+        RollingFileAppender::new(Rotation::DAILY, log_dir.clone(), "lazywallet.log");
 
     // Configure le subscriber (receveur de logs)
     // CONCEPT : Builder pattern avec layers
@@ -147,7 +140,7 @@ fn init_logging() -> Result<()> {
                 .with_ansi(false) // Pas de codes couleur dans le fichier
                 .with_target(true) // Inclut le module (ex: lazywallet::api::yahoo)
                 .with_thread_ids(true) // Inclut l'ID du thread (utile pour async)
-                .with_line_number(true) // Inclut le numéro de ligne
+                .with_line_number(true), // Inclut le numéro de ligne
         )
         .with(
             // Filtre les logs par niveau
@@ -272,7 +265,12 @@ async fn load_watchlist_data() -> Result<Vec<WatchlistItem>> {
     // CONCEPT RUST : Loop avec enumerate
     for (i, &(symbol, name)) in tickers.iter().enumerate() {
         debug!(ticker = %symbol, progress = i + 1, total = tickers.len(), "Fetching ticker data");
-        info!("  [{}/{}] Chargement de {}...", i + 1, tickers.len(), symbol);
+        info!(
+            "  [{}/{}] Chargement de {}...",
+            i + 1,
+            tickers.len(),
+            symbol
+        );
 
         // Appel API pour récupérer les données
         // Utilise l'intervalle par défaut (30m)
@@ -293,10 +291,7 @@ async fn load_watchlist_data() -> Result<Vec<WatchlistItem>> {
             Err(e) => {
                 // Erreur : affiche et crée un item sans données
                 error!(ticker = %symbol, error = ?e, "Failed to fetch ticker data");
-                watchlist.push(WatchlistItem::new(
-                    symbol.to_string(),
-                    name.to_string(),
-                ));
+                watchlist.push(WatchlistItem::new(symbol.to_string(), name.to_string()));
             }
         }
 
@@ -353,7 +348,11 @@ fn spawn_background_worker(
                     info!(?command, "Worker received command");
 
                     match command {
-                        AppCommand::ReloadTickerData { symbol, interval, index } => {
+                        AppCommand::ReloadTickerData {
+                            symbol,
+                            interval,
+                            index,
+                        } => {
                             // Active l'indicateur de chargement
                             {
                                 let mut app_lock = app.lock().unwrap();
@@ -368,14 +367,14 @@ fn spawn_background_worker(
                             // CONCEPT : block_on dans un worker thread
                             // - block_on() bloque le thread worker (pas l'UI)
                             // - L'UI continue à tourner normalement
-                            let result = runtime.block_on(async {
-                                fetch_ticker_data(&symbol, interval).await
-                            });
+                            let result = runtime
+                                .block_on(async { fetch_ticker_data(&symbol, interval).await });
 
                             match result {
                                 Ok((data, long_name)) => {
                                     info!(ticker = %symbol, interval = %interval.label(), candles = data.len(), long_name = ?long_name, "Data loaded successfully");
-                                    let _ = result_tx.send(AppResult::TickerDataLoaded { index, data });
+                                    let _ =
+                                        result_tx.send(AppResult::TickerDataLoaded { index, data });
                                 }
                                 Err(e) => {
                                     error!(ticker = %symbol, error = ?e, "Failed to load ticker data");
@@ -398,10 +397,7 @@ fn spawn_background_worker(
                             // Active l'indicateur de chargement
                             {
                                 let mut app_lock = app.lock().unwrap();
-                                app_lock.start_loading(Some(format!(
-                                    "Ajout de {}...",
-                                    symbol
-                                )));
+                                app_lock.start_loading(Some(format!("Ajout de {}...", symbol)));
                             }
 
                             // Fetch les données avec l'intervalle par défaut
@@ -505,7 +501,11 @@ fn run(
                             item.data = Some(data);
                         }
                     }
-                    AppResult::LoadError { index: _, symbol, error } => {
+                    AppResult::LoadError {
+                        index: _,
+                        symbol,
+                        error,
+                    } => {
                         error!(ticker = %symbol, error = %error, "Failed to load ticker data");
                         // Optionally: show error to user via app state
                     }
@@ -586,7 +586,11 @@ fn run(
 /// - Combinaison de conditions pour gérer différents contextes
 /// - Navigation contextuelle selon l'écran actuel
 /// - command_tx : pour envoyer des commandes au worker thread
-fn handle_event(app: &mut App, event: lazywallet::ui::events::Event, command_tx: &mpsc::Sender<AppCommand>) {
+fn handle_event(
+    app: &mut App,
+    event: lazywallet::ui::events::Event,
+    command_tx: &mpsc::Sender<AppCommand>,
+) {
     // Importe les helpers pour vérifier les événements
     use lazywallet::ui::events::{
         get_char_from_event, is_add_event, is_backspace_event, is_delete_event, is_down_event,
@@ -617,7 +621,9 @@ fn handle_event(app: &mut App, event: lazywallet::ui::events::Event, command_tx:
             if !app.watchlist.is_empty() {
                 if app.is_awaiting_delete_confirmation() {
                     // Deuxième pression : on supprime
-                    let symbol = app.watchlist.get(app.selected_index)
+                    let symbol = app
+                        .watchlist
+                        .get(app.selected_index)
                         .map(|item| item.symbol.clone())
                         .unwrap_or_default();
                     info!(ticker = %symbol, "User confirmed delete");
@@ -666,10 +672,12 @@ fn handle_event(app: &mut App, event: lazywallet::ui::events::Event, command_tx:
         }
 
         // ESC ou SPACE : retour au dashboard depuis ChartView
-        Event::Key(_) if (is_escape_event(&event) || is_space_event(&event)) && app.is_on_chart() => {
+        Event::Key(_)
+            if (is_escape_event(&event) || is_space_event(&event)) && app.is_on_chart() =>
+        {
             app.cancel_quit(); // Annule la confirmation de quit si active
-            // CONCEPT : State transition
-            // ChartView → Dashboard
+                               // CONCEPT : State transition
+                               // ChartView → Dashboard
             debug!("User returned to dashboard");
             app.show_dashboard();
         }
@@ -789,7 +797,7 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     execute!(
         stdout,
         EnterAlternateScreen,
-        EnableMouseCapture  // Active la souris (optionnel)
+        EnableMouseCapture // Active la souris (optionnel)
     )?;
 
     // Crée le backend crossterm

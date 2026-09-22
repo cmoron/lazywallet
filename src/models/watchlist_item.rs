@@ -53,7 +53,7 @@ impl WatchlistItem {
     /// - .last()? : early return si la liste est vide
     /// - Some(ohlc.close) : retourne le prix
     pub fn current_price(&self) -> Option<f64> {
-        let data = self.data.as_ref()?;  // &Option<T> -> Option<&T>
+        let data = self.data.as_ref()?; // &Option<T> -> Option<&T>
         let last = data.last()?;
         Some(last.close)
     }
@@ -136,8 +136,8 @@ impl WatchlistItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Timeframe;
     use crate::models::Interval;
+    use crate::models::Timeframe;
     use chrono::Utc;
 
     #[test]
@@ -151,20 +151,9 @@ mod tests {
     #[test]
     fn test_watchlist_item_with_data() {
         let mut data = OHLCData::new("AAPL".to_string(), Interval::D1, Timeframe::OneWeek);
-        data.add_candle(OHLC::new(
-            Utc::now(),
-            100.0,
-            110.0,
-            95.0,
-            105.0,
-            1000,
-        ));
+        data.add_candle(OHLC::new(Utc::now(), 100.0, 110.0, 95.0, 105.0, 1000));
 
-        let item = WatchlistItem::with_data(
-            "AAPL".to_string(),
-            "Apple Inc.".to_string(),
-            data,
-        );
+        let item = WatchlistItem::with_data("AAPL".to_string(), "Apple Inc.".to_string(), data);
 
         assert!(item.has_data());
         assert_eq!(item.current_price(), Some(105.0));
@@ -175,11 +164,7 @@ mod tests {
         let mut data = OHLCData::new("AAPL".to_string(), Interval::D1, Timeframe::OneWeek);
         data.add_candle(OHLC::new(Utc::now(), 100.0, 110.0, 95.0, 105.0, 1000));
 
-        let item = WatchlistItem::with_data(
-            "AAPL".to_string(),
-            "Apple Inc.".to_string(),
-            data,
-        );
+        let item = WatchlistItem::with_data("AAPL".to_string(), "Apple Inc.".to_string(), data);
 
         assert!(item.is_positive());
     }

@@ -5,7 +5,7 @@
 // financières depuis différentes sources (Yahoo Finance, CoinGecko, etc.)
 // ============================================================================
 
-pub mod yahoo;  // Client API Yahoo Finance
+pub mod yahoo; // Client API Yahoo Finance
 
 // Re-export des fonctions principales
 pub use yahoo::fetch_ticker_data;

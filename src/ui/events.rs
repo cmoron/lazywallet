@@ -151,7 +151,10 @@ pub fn is_enter_event(event: &Event) -> bool {
 /// - Support des touches Vim pour les power users !
 pub fn is_up_event(event: &Event) -> bool {
     if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K'))
+        matches!(
+            key.code,
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K')
+        )
     } else {
         false
     }
@@ -160,7 +163,10 @@ pub fn is_up_event(event: &Event) -> bool {
 /// Vérifie si l'événement est la flèche vers le bas ou 'j' (vim)
 pub fn is_down_event(event: &Event) -> bool {
     if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J'))
+        matches!(
+            key.code,
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J')
+        )
     } else {
         false
     }
@@ -246,10 +252,16 @@ mod tests {
 
     #[test]
     fn test_is_quit_event() {
-        let quit_event = Event::Key(KeyEvent::new(KeyCode::Char('q'), event::KeyModifiers::empty()));
+        let quit_event = Event::Key(KeyEvent::new(
+            KeyCode::Char('q'),
+            event::KeyModifiers::empty(),
+        ));
         assert!(is_quit_event(&quit_event));
 
-        let other_event = Event::Key(KeyEvent::new(KeyCode::Char('a'), event::KeyModifiers::empty()));
+        let other_event = Event::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            event::KeyModifiers::empty(),
+        ));
         assert!(!is_quit_event(&other_event));
 
         assert!(!is_quit_event(&Event::Tick));

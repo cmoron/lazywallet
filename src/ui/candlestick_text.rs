@@ -36,18 +36,18 @@ use crate::models::{Interval, LabelStrategy, OHLC};
 
 /// Caractères Unicode pour le rendu des chandeliers
 const UNICODE_VOID: char = ' ';
-const UNICODE_BODY: char = '┃';              // Corps plein
-const UNICODE_HALF_BODY_BOTTOM: char = '╻';  // Corps avec espace en bas
-const UNICODE_HALF_BODY_TOP: char = '╹';     // Corps avec espace en haut
-const UNICODE_WICK: char = '│';              // Mèche pleine
-const UNICODE_TOP: char = '╽';               // Transition corps→mèche (haut)
-const UNICODE_BOTTOM: char = '╿';            // Transition corps→mèche (bas)
-const UNICODE_UPPER_WICK: char = '╷';        // Demi-mèche supérieure
-const UNICODE_LOWER_WICK: char = '╵';        // Demi-mèche inférieure
+const UNICODE_BODY: char = '┃'; // Corps plein
+const UNICODE_HALF_BODY_BOTTOM: char = '╻'; // Corps avec espace en bas
+const UNICODE_HALF_BODY_TOP: char = '╹'; // Corps avec espace en haut
+const UNICODE_WICK: char = '│'; // Mèche pleine
+const UNICODE_TOP: char = '╽'; // Transition corps→mèche (haut)
+const UNICODE_BOTTOM: char = '╿'; // Transition corps→mèche (bas)
+const UNICODE_UPPER_WICK: char = '╷'; // Demi-mèche supérieure
+const UNICODE_LOWER_WICK: char = '╵'; // Demi-mèche inférieure
 
 /// Couleurs pour chandeliers haussiers et baissiers
-const BULLISH_COLOR: Color = Color::Rgb(52, 208, 88);   // Vert
-const BEARISH_COLOR: Color = Color::Rgb(234, 74, 90);   // Rouge
+const BULLISH_COLOR: Color = Color::Rgb(52, 208, 88); // Vert
+const BEARISH_COLOR: Color = Color::Rgb(234, 74, 90); // Rouge
 
 /// Largeur de l'axe Y (pour les prix)
 const Y_AXIS_WIDTH: u16 = 12;
@@ -97,7 +97,12 @@ impl<'a> CandlestickRenderer<'a> {
     /// - Adapte la largeur de l'axe Y selon la largeur du terminal
     /// - Largeur < 80 cols : axe Y réduit à 8 caractères
     /// - Largeur >= 80 cols : axe Y normal à 12 caractères
-    pub fn new(candles: &'a [OHLC], interval: Interval, ticker_type: crate::models::TickerType, area: Rect) -> Self {
+    pub fn new(
+        candles: &'a [OHLC],
+        interval: Interval,
+        ticker_type: crate::models::TickerType,
+        area: Rect,
+    ) -> Self {
         // CORRECTION : Calcule les bornes de prix sur les chandeliers VISIBLES uniquement
         // Évite que des pics/creux hors de la fenêtre d'affichage n'étirent l'axe Y
         let visible = Self::get_visible_slice(candles);
@@ -105,9 +110,9 @@ impl<'a> CandlestickRenderer<'a> {
 
         // Largeur adaptative de l'axe Y selon la largeur du terminal
         let y_axis_width = if area.width < ADAPTIVE_Y_AXIS_THRESHOLD {
-            NARROW_Y_AXIS_WIDTH  // Mode étroit : 8 caractères
+            NARROW_Y_AXIS_WIDTH // Mode étroit : 8 caractères
         } else {
-            Y_AXIS_WIDTH  // Mode normal : 12 caractères
+            Y_AXIS_WIDTH // Mode normal : 12 caractères
         };
 
         Self {
@@ -129,16 +134,11 @@ impl<'a> CandlestickRenderer<'a> {
             .iter()
             .fold(f64::NEG_INFINITY, |max, c| max.max(c.high));
 
-        let min_price = candles
-            .iter()
-            .fold(f64::INFINITY, |min, c| min.min(c.low));
+        let min_price = candles.iter().fold(f64::INFINITY, |min, c| min.min(c.low));
 
         // Ajoute une marge de 2%
         let margin = (max_price - min_price) * 0.02;
-        (
-            (min_price - margin).max(0.0),
-            max_price + margin,
-        )
+        ((min_price - margin).max(0.0), max_price + margin)
     }
 
     /// Convertit un prix en coordonnée de hauteur
@@ -404,8 +404,7 @@ impl<'a> CandlestickRenderer<'a> {
         match strategy {
             LabelStrategy::RoundHours { interval_hours } => {
                 // Affiche si l'heure est un multiple de interval_hours
-                candle.timestamp.hour() % interval_hours == 0
-                    && candle.timestamp.minute() == 0
+                candle.timestamp.hour() % interval_hours == 0 && candle.timestamp.minute() == 0
             }
             LabelStrategy::DayChanges => {
                 // Affiche si changement de jour
@@ -502,11 +501,9 @@ impl<'a> CandlestickRenderer<'a> {
                         interval_hours: interval_hours * 2,
                     }
                 }
-                LabelStrategy::RegularDays { interval_days } => {
-                    LabelStrategy::RegularDays {
-                        interval_days: interval_days * 2,
-                    }
-                }
+                LabelStrategy::RegularDays { interval_days } => LabelStrategy::RegularDays {
+                    interval_days: interval_days * 2,
+                },
                 // DayChanges et Weeks: pas d'ajustement
                 other => other,
             }
@@ -519,13 +516,19 @@ impl<'a> CandlestickRenderer<'a> {
         // ========================================
         // Ligne 1 : Tick marks │ (alternance gris/jaune)
         // ========================================
-        let mut tick_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
+        let mut tick_spans = vec![Span::raw(format!(
+            "{:>width$}",
+            "",
+            width = self.y_axis_width as usize
+        ))];
         let mut prev_candle = None;
         let mut label_count = 0;
         let mut last_pos = 0;
 
         for (candle, pos) in visible.iter().zip(positions.iter()) {
-            if Self::should_show_label(candle, prev_candle, adjusted_strategy) && pos.column < self.width as usize {
+            if Self::should_show_label(candle, prev_candle, adjusted_strategy)
+                && pos.column < self.width as usize
+            {
                 // Ajoute les espaces avant le tick
                 if pos.column > last_pos {
                     tick_spans.push(Span::raw(" ".repeat(pos.column - last_pos)));
@@ -597,7 +600,11 @@ impl<'a> CandlestickRenderer<'a> {
             }
 
             // Construit les spans avec alternance de couleurs
-            let mut time_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
+            let mut time_spans = vec![Span::raw(format!(
+                "{:>width$}",
+                "",
+                width = self.y_axis_width as usize
+            ))];
             let mut current_text = String::new();
             let mut current_color = None;
 
@@ -608,7 +615,10 @@ impl<'a> CandlestickRenderer<'a> {
                     // Change de couleur : flush le span précédent
                     if !current_text.is_empty() {
                         if let Some(color) = current_color {
-                            time_spans.push(Span::styled(current_text.clone(), Style::default().fg(color)));
+                            time_spans.push(Span::styled(
+                                current_text.clone(),
+                                Style::default().fg(color),
+                            ));
                         } else {
                             time_spans.push(Span::raw(current_text.clone()));
                         }
@@ -631,7 +641,11 @@ impl<'a> CandlestickRenderer<'a> {
             lines.push(Line::from(time_spans));
         } else {
             // D1/W1 : ligne vide
-            let empty_spans = vec![Span::raw(format!("{:>width$}", "", width = (self.y_axis_width + self.width) as usize))];
+            let empty_spans = vec![Span::raw(format!(
+                "{:>width$}",
+                "",
+                width = (self.y_axis_width + self.width) as usize
+            ))];
             lines.push(Line::from(empty_spans));
         }
 
@@ -652,7 +666,6 @@ impl<'a> CandlestickRenderer<'a> {
         let mut label_count = 0;
 
         for (candle, pos) in visible.iter().zip(positions.iter()) {
-
             if Self::should_show_label(candle, prev_candle, date_strategy) {
                 let date_label = candle.timestamp.format(date_format).to_string();
 
@@ -692,7 +705,11 @@ impl<'a> CandlestickRenderer<'a> {
         }
 
         // Construit les spans avec alternance de couleurs
-        let mut date_spans = vec![Span::raw(format!("{:>width$}", "", width = self.y_axis_width as usize))];
+        let mut date_spans = vec![Span::raw(format!(
+            "{:>width$}",
+            "",
+            width = self.y_axis_width as usize
+        ))];
         let mut current_text = String::new();
         let mut current_color = None;
 
@@ -703,7 +720,10 @@ impl<'a> CandlestickRenderer<'a> {
                 // Change de couleur : flush le span précédent
                 if !current_text.is_empty() {
                     if let Some(color) = current_color {
-                        date_spans.push(Span::styled(current_text.clone(), Style::default().fg(color)));
+                        date_spans.push(Span::styled(
+                            current_text.clone(),
+                            Style::default().fg(color),
+                        ));
                     } else {
                         date_spans.push(Span::raw(current_text.clone()));
                     }
@@ -770,8 +790,8 @@ pub fn render_candlestick_chart(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header
-            Constraint::Min(0),      // Graphique
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Graphique
         ])
         .split(area)
         .to_vec();
@@ -780,7 +800,8 @@ pub fn render_candlestick_chart(frame: &mut Frame, app: &App, area: Rect) {
     render_header(frame, app, item, chunks[0]);
 
     // Crée le renderer et génère les lignes
-    let renderer = CandlestickRenderer::new(&data.candles, data.interval, data.ticker_type, chunks[1]);
+    let renderer =
+        CandlestickRenderer::new(&data.candles, data.interval, data.ticker_type, chunks[1]);
     let lines = renderer.render_lines();
 
     // Crée le widget Paragraph avec les lignes
@@ -832,7 +853,9 @@ fn render_header(frame: &mut Frame, app: &App, item: &crate::models::WatchlistIt
         vec![Line::from(vec![
             Span::styled(
                 "⚠  Appuyez sur ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "[q]",
@@ -843,24 +866,37 @@ fn render_header(frame: &mut Frame, app: &App, item: &crate::models::WatchlistIt
             ),
             Span::styled(
                 " à nouveau pour quitter, ou n'importe quelle autre touche pour annuler ⚠",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
         ])]
     } else if app.is_loading_data() {
         // Indicateur de chargement
-        let message = app.loading_message.clone().unwrap_or_else(|| "Chargement en cours...".to_string());
+        let message = app
+            .loading_message
+            .clone()
+            .unwrap_or_else(|| "Chargement en cours...".to_string());
         vec![Line::from(vec![
             Span::styled(
                 "⏳ ",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 message,
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
         ])]
     } else if let (Some(price), Some(change)) = (item.current_price(), item.change_percent()) {
-        let color = if change >= 0.0 { Color::Green } else { Color::Red };
+        let color = if change >= 0.0 {
+            Color::Green
+        } else {
+            Color::Red
+        };
         let arrow = if change >= 0.0 { "▲" } else { "▼" };
 
         vec![Line::from(vec![
@@ -870,7 +906,10 @@ fn render_header(frame: &mut Frame, app: &App, item: &crate::models::WatchlistIt
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled(format!("{} {:+.2}%", arrow, change), Style::default().fg(color)),
+            Span::styled(
+                format!("{} {:+.2}%", arrow, change),
+                Style::default().fg(color),
+            ),
             Span::raw("  "),
             Span::styled(
                 "[ESC]",
@@ -891,7 +930,9 @@ fn render_header(frame: &mut Frame, app: &App, item: &crate::models::WatchlistIt
         vec![Line::from("Chargement...")]
     };
 
-    let paragraph = Paragraph::new(text).block(block).alignment(Alignment::Center);
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .alignment(Alignment::Center);
     frame.render_widget(paragraph, area);
 }
 
@@ -908,10 +949,7 @@ fn render_no_data(frame: &mut Frame, area: Rect, message: &str) {
 
     let text = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            message,
-            Style::default().fg(Color::Red),
-        )),
+        Line::from(Span::styled(message, Style::default().fg(Color::Red))),
         Line::from(""),
         Line::from(Span::styled(
             "[ESC] Retour",
@@ -919,7 +957,9 @@ fn render_no_data(frame: &mut Frame, area: Rect, message: &str) {
         )),
     ];
 
-    let paragraph = Paragraph::new(text).block(block).alignment(Alignment::Center);
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .alignment(Alignment::Center);
     frame.render_widget(paragraph, area);
 }
 
@@ -952,7 +992,9 @@ fn render_too_narrow(frame: &mut Frame, area: Rect) {
         )),
     ];
 
-    let paragraph = Paragraph::new(text).block(block).alignment(Alignment::Center);
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .alignment(Alignment::Center);
     frame.render_widget(paragraph, area);
 }
 

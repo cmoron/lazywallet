@@ -118,7 +118,7 @@ impl App {
             running: true,
             watchlist: Vec::new(),
             selected_index: 0,
-            current_screen: Screen::Dashboard,  // Commence sur le dashboard
+            current_screen: Screen::Dashboard, // Commence sur le dashboard
             current_interval: Interval::default(), // 30m par défaut
             confirm_quit: false,
             is_loading: false,
