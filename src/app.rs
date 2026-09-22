@@ -131,17 +131,31 @@ impl App {
             .collect()
     }
 
-    /// Recharge chaque ticker dans l'intervalle déjà chargé pour lui
+    /// Recharge chaque ticker
+    ///
+    /// - Le graphique affiché : dans l'intervalle choisi (réessaie après un échec)
+    /// - Les autres : dans l'intervalle déjà chargé, sauf W1 qui repasse à
+    ///   l'intervalle par défaut — une chandelle hebdo ne permet pas de recalculer
+    ///   la clôture de la veille, la variation du jour deviendrait périmée
     pub fn refresh_commands(&mut self, now: Instant) -> Vec<AppCommand> {
         self.last_refresh = now;
+        let displayed = (self.current_screen == Screen::ChartView).then_some(self.selected_index);
         self.watchlist
             .iter()
-            .map(|item| AppCommand::Load {
-                symbol: item.symbol.clone(),
-                interval: item
-                    .data
-                    .as_ref()
-                    .map_or(Interval::default(), |d| d.interval),
+            .enumerate()
+            .map(|(index, item)| {
+                let interval = if Some(index) == displayed {
+                    self.current_interval
+                } else {
+                    match item.data.as_ref().map(|d| d.interval) {
+                        Some(Interval::W1) | None => Interval::default(),
+                        Some(interval) => interval,
+                    }
+                };
+                AppCommand::Load {
+                    symbol: item.symbol.clone(),
+                    interval,
+                }
             })
             .collect()
     }
@@ -506,5 +520,49 @@ mod tests {
             "{:?}",
             app.status
         );
+    }
+
+    #[test]
+    fn refresh_after_failed_interval_change_retries_chosen_interval() {
+        // Revue : 30m chargé, passage en 1h échoué → r rechargeait le 30m
+        let (mut app, now) = app(&["AAPL", "TSLA"]);
+        for symbol in ["AAPL", "TSLA"] {
+            app.apply_result(
+                AppResult::Loaded {
+                    symbol: symbol.into(),
+                    fetched: fetched(symbol, Interval::M30),
+                },
+                now,
+            );
+        }
+        app.open_chart();
+        app.current_interval = Interval::H1;
+        let commands = app.refresh_commands(now);
+        assert!(commands.contains(&AppCommand::Load {
+            symbol: "AAPL".into(),
+            interval: Interval::H1
+        }));
+        assert!(commands.contains(&AppCommand::Load {
+            symbol: "TSLA".into(),
+            interval: Interval::M30
+        }));
+    }
+
+    #[test]
+    fn weekly_data_is_refreshed_at_default_interval_off_screen() {
+        // Revue : un ticker laissé en 1w gardait une clôture de veille périmée
+        let (mut app, now) = app(&["AAPL", "TSLA"]);
+        app.apply_result(
+            AppResult::Loaded {
+                symbol: "TSLA".into(),
+                fetched: fetched("TSLA", Interval::W1),
+            },
+            now,
+        );
+        let commands = app.refresh_commands(now);
+        assert!(commands.contains(&AppCommand::Load {
+            symbol: "TSLA".into(),
+            interval: Interval::default()
+        }));
     }
 }

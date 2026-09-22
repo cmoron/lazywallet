@@ -50,11 +50,15 @@ pub fn render_chart_screen(frame: &mut Frame, app: &App) {
     let interval = if data.interval == app.current_interval {
         data.interval.label().to_string()
     } else {
-        format!(
-            "{} → {} ⏳",
-            data.interval.label(),
-            app.current_interval.label()
-        )
+        {
+            // ⏳ pendant le chargement ; ⚠ s'il a échoué ([r] réessaie)
+            let marker = if app.is_loading() { "⏳" } else { "⚠ [r]" };
+            format!(
+                "{} → {} {marker}",
+                data.interval.label(),
+                app.current_interval.label()
+            )
+        }
     };
     let block = Block::default()
         .borders(Borders::ALL)
