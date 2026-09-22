@@ -23,8 +23,8 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use tracing::info;
 
 use lazywallet::app::App;
-use lazywallet::models::Interval;
-use lazywallet::ui::{events::EventHandler, render};
+use lazywallet::ui::events::{handle_key, EventHandler};
+use lazywallet::ui::render;
 use lazywallet::worker::{spawn_worker, AppCommand, AppResult};
 
 // ============================================================================
@@ -110,7 +110,7 @@ fn run(
     commands: &Sender<AppCommand>,
     results: &Receiver<AppResult>,
 ) -> Result<()> {
-    let events = EventHandler::new();
+    let events = EventHandler;
     let initial = app.initial_commands();
     send_all(app, commands, initial)?;
 
@@ -128,7 +128,9 @@ fn run(
 
         let now = Instant::now();
         let mut batch = app.tick(now);
-        batch.extend(handle_event(app, events.next()?, now));
+        if let Some(key) = events.next()? {
+            batch.extend(handle_key(app, key, now));
+        }
         send_all(app, commands, batch)?;
     }
 
@@ -144,94 +146,6 @@ fn send_all(app: &mut App, commands: &Sender<AppCommand>, batch: Vec<AppCommand>
         app.pending += 1;
     }
     Ok(())
-}
-
-// ============================================================================
-// Gestion des événements (réécrite par écran en Task 4)
-// ============================================================================
-
-/// Traite un événement et retourne les commandes réseau à envoyer
-fn handle_event(
-    app: &mut App,
-    event: lazywallet::ui::events::Event,
-    now: Instant,
-) -> Vec<AppCommand> {
-    use lazywallet::ui::events::{
-        get_char_from_event, is_add_event, is_backspace_event, is_delete_event, is_down_event,
-        is_enter_event, is_escape_event, is_next_interval_event, is_previous_interval_event,
-        is_quit_event, is_space_event, is_ticker_char_event, is_up_event, Event,
-    };
-
-    let mut commands = Vec::new();
-    match event {
-        Event::Key(_) if is_quit_event(&event) => {
-            if app.is_awaiting_quit_confirmation() {
-                app.quit();
-            } else {
-                app.request_quit();
-            }
-        }
-        Event::Key(_) if is_delete_event(&event) && app.is_on_dashboard() => {
-            if app.is_awaiting_delete_confirmation() {
-                app.delete_selected(now);
-            } else if app.selected_item().is_some() {
-                app.request_delete();
-            }
-        }
-        Event::Key(_) if is_add_event(&event) && app.is_on_dashboard() => {
-            app.start_input("Add ticker: ".to_string());
-        }
-        Event::Key(_) if is_up_event(&event) && app.is_on_dashboard() => {
-            app.cancel_quit();
-            app.cancel_delete();
-            app.navigate_up();
-        }
-        Event::Key(_) if is_down_event(&event) && app.is_on_dashboard() => {
-            app.cancel_quit();
-            app.cancel_delete();
-            app.navigate_down();
-        }
-        Event::Key(_) if is_enter_event(&event) && app.is_on_dashboard() => {
-            app.cancel_quit();
-            app.cancel_delete();
-            commands.extend(app.open_chart());
-        }
-        Event::Key(_)
-            if (is_escape_event(&event) || is_space_event(&event)) && app.is_on_chart() =>
-        {
-            app.cancel_quit();
-            app.show_dashboard();
-        }
-        Event::Key(_) if is_escape_event(&event) && app.is_in_input_mode() => {
-            app.cancel_input();
-        }
-        Event::Key(_) if is_enter_event(&event) && app.is_in_input_mode() => {
-            let symbol = app.submit_input();
-            commands.extend(app.request_add(&symbol, now));
-        }
-        Event::Key(_) if is_backspace_event(&event) && app.is_in_input_mode() => {
-            app.backspace();
-        }
-        Event::Key(_) if is_ticker_char_event(&event) && app.is_in_input_mode() => {
-            if let Some(c) = get_char_from_event(&event) {
-                app.append_char(c);
-            }
-        }
-        Event::Key(_) if is_next_interval_event(&event) && app.is_on_chart() => {
-            app.cancel_quit();
-            commands.extend(app.change_interval(Interval::next));
-        }
-        Event::Key(_) if is_previous_interval_event(&event) && app.is_on_chart() => {
-            app.cancel_quit();
-            commands.extend(app.change_interval(Interval::previous));
-        }
-        Event::Key(_) => {
-            app.cancel_quit();
-            app.cancel_delete();
-        }
-        _ => {}
-    }
-    commands
 }
 
 // ============================================================================

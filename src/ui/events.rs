@@ -1,245 +1,120 @@
 // ============================================================================
-// Gestion des événements
+// Gestion des événements clavier
 // ============================================================================
-// Gère les événements clavier et les ticks de l'application
-//
 // CONCEPTS RUST :
-// 1. Enums avec variants : représenter différents types d'événements
-// 2. Channels (mpsc) : communication entre threads
-// 3. Threading : exécuter la lecture d'événements dans un thread séparé
-// 4. Error handling avec Result
+// 1. Pattern matching sur KeyCode avec guards (`if on_chart`)
+// 2. Fonctions pures : handle_key ne fait ni I/O ni réseau, elle retourne
+//    les commandes à envoyer — c'est ce qui la rend testable
 // ============================================================================
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{
+    self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+};
 
-// ============================================================================
-// Enum Event
-// ============================================================================
-// CONCEPT RUST : Enums avec données
-// - Chaque variant peut contenir des données différentes
-// - Key(KeyEvent) : stocke l'événement clavier complet
-// - Tick : variant sans données (unit variant)
-//
-// C'est plus puissant que les enums en C/Java !
-// ============================================================================
+use crate::app::{App, Screen};
+use crate::models::Interval;
+use crate::worker::AppCommand;
 
-/// Événements de l'application
-#[derive(Debug, Clone)]
-pub enum Event {
-    /// Touche pressée
-    Key(KeyEvent),
-
-    /// Tick régulier (pour animations, rafraîchissement)
-    Tick,
-
-    /// Erreur survenue
-    Error,
-}
-
-// ============================================================================
-// Structure EventHandler
-// ============================================================================
-// CONCEPT : Singleton pattern pour gérer les événements
-// - Un seul handler pour toute l'application
-// - Pas besoin de stocker d'état (stateless)
-// ============================================================================
-
-/// Gestionnaire d'événements
+/// Lecteur d'événements clavier
 pub struct EventHandler;
 
 impl EventHandler {
-    /// Crée un nouveau gestionnaire d'événements
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Lit le prochain événement (bloquant avec timeout)
+    /// Attend une touche au plus 250 ms
     ///
-    /// CONCEPT RUST : Result et ?
-    /// - poll() peut échouer (I/O error)
-    /// - read() peut échouer
-    /// - ? propage automatiquement les erreurs
-    ///
-    /// CONCEPT : Non-blocking I/O avec timeout
-    /// - poll(timeout) attend max 250ms
-    /// - Si pas d'événement, retourne Ok(Event::Tick)
-    /// - Si événement, le lit et le convertit
-    pub fn next(&self) -> Result<Event> {
-        // Poll avec timeout de 250ms
-        // CONCEPT RUST : if expression
-        // - if retourne une valeur en Rust (comme un ternaire ?)
-        if event::poll(Duration::from_millis(250))? {
-            // Il y a un événement, on le lit
-            match event::read()? {
-                // Événement clavier
-                CrosstermEvent::Key(key) => {
-                    // CONCEPT : Filter sur KeyEventKind
-                    // Sur certains OS, on reçoit Press ET Release
-                    // On ne veut gérer que Press pour éviter les doublons
-                    if key.kind == KeyEventKind::Press {
-                        Ok(Event::Key(key))
-                    } else {
-                        // Ignore Release, retourne Tick
-                        Ok(Event::Tick)
-                    }
-                }
-
-                // Autres événements (resize, mouse, etc.) ignorés pour l'instant
-                _ => Ok(Event::Tick),
-            }
-        } else {
-            // Timeout : pas d'événement, retourne Tick
-            Ok(Event::Tick)
+    /// None si rien n'arrive, si c'est un relâchement de touche (certains OS
+    /// envoient Press ET Release) ou un autre événement (resize : le prochain
+    /// rendu s'adapte de lui-même).
+    pub fn next(&self) -> Result<Option<KeyEvent>> {
+        if !event::poll(Duration::from_millis(250))? {
+            return Ok(None);
+        }
+        match event::read()? {
+            CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => Ok(Some(key)),
+            _ => Ok(None),
         }
     }
 }
 
-// ============================================================================
-// Helper : Convertir KeyEvent en action
-// ============================================================================
-// CONCEPT RUST : Pattern matching avancé
-// - Match sur KeyCode pour identifier la touche
-// - Peut aussi matcher sur les modifiers (Ctrl, Alt, Shift)
-// ============================================================================
-
-/// Vérifie si l'événement est la touche 'q' (quitter)
-pub fn is_quit_event(event: &Event) -> bool {
-    // CONCEPT RUST : Pattern matching avec if let
-    // - Destructure Event::Key et vérifie le KeyCode en une ligne
-    // - Plus élégant que match pour un seul cas
-    if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
-    } else {
-        false
-    }
-}
-
-/// Vérifie si l'événement est Échap
-pub fn is_escape_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Esc)
-    } else {
-        false
-    }
-}
-
-/// Vérifie si l'événement est Espace
-pub fn is_space_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Char(' '))
-    } else {
-        false
-    }
-}
-
-/// Vérifie si l'événement est Entrée
-pub fn is_enter_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Enter)
-    } else {
-        false
-    }
-}
-
-/// Vérifie si l'événement est la flèche vers le haut ou 'k' (vim)
+/// Traduit une touche en changement d'état + commandes réseau
 ///
-/// CONCEPT RUST : Multiple patterns avec |
-/// - KeyCode::Up | KeyCode::Char('k') : match l'un ou l'autre
-/// - Support des touches Vim pour les power users !
-pub fn is_up_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(
-            key.code,
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K')
-        )
-    } else {
-        false
+/// CONCEPT : Routage par écran d'abord. En saisie, toutes les lettres vont au
+/// buffer — c'est ce qui empêche `q` de quitter pendant qu'on tape "QQQ".
+pub fn handle_key(app: &mut App, key: KeyEvent, now: Instant) -> Vec<AppCommand> {
+    // Ctrl+C quitte partout : en raw mode le terminal ne l'envoie plus en signal
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.quit();
+        return Vec::new();
     }
-}
-
-/// Vérifie si l'événement est la flèche vers le bas ou 'j' (vim)
-pub fn is_down_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(
-            key.code,
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J')
-        )
-    } else {
-        false
+    if app.current_screen == Screen::InputMode {
+        return handle_input_key(app, key, now);
     }
-}
 
-/// Vérifie si l'événement est 'l' (intervalle suivant)
-pub fn is_next_interval_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Char('l'))
-    } else {
-        false
-    }
-}
+    // Toute touche annule une confirmation en cours ; on retient laquelle était active
+    // CONCEPT RUST : std::mem::take remplace la valeur par Default (false) et rend l'ancienne
+    let confirming_quit = std::mem::take(&mut app.confirm_quit);
+    let confirming_delete = std::mem::take(&mut app.confirm_delete);
+    let on_chart = app.current_screen == Screen::ChartView;
 
-/// Vérifie si l'événement est 'h' (intervalle précédent)
-pub fn is_previous_interval_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Char('h'))
-    } else {
-        false
-    }
-}
+    match key.code {
+        KeyCode::Char('q' | 'Q') if confirming_quit => app.quit(),
+        KeyCode::Char('q' | 'Q') => app.confirm_quit = true,
+        KeyCode::Char('r' | 'R') => return app.refresh_commands(now),
 
-/// Vérifie si l'événement est 'a' (add ticker)
-///
-/// CONCEPT : Vim-style 'a' for append
-/// - Ouvre le mode input pour ajouter un ticker
-pub fn is_add_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A'))
-    } else {
-        false
-    }
-}
-
-/// Vérifie si l'événement est 'd' (delete ticker)
-///
-/// CONCEPT : Vim-style 'd' for delete
-/// - Demande confirmation avant suppression
-pub fn is_delete_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Char('d') | KeyCode::Char('D'))
-    } else {
-        false
-    }
-}
-
-/// Vérifie si l'événement est Backspace
-pub fn is_backspace_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Backspace)
-    } else {
-        false
-    }
-}
-
-/// Vérifie si l'événement est un caractère alphanumérique ou tiret (pour saisie ticker)
-pub fn is_ticker_char_event(event: &Event) -> bool {
-    if let Event::Key(key) = event {
-        matches!(key.code, KeyCode::Char(c) if c.is_alphanumeric() || c == '-' || c == '.')
-    } else {
-        false
-    }
-}
-
-/// Extrait le caractère d'un événement clavier si c'est un caractère
-pub fn get_char_from_event(event: &Event) -> Option<char> {
-    if let Event::Key(key) = event {
-        if let KeyCode::Char(c) = key.code {
-            return Some(c);
+        // Vue graphique
+        KeyCode::Esc | KeyCode::Char(' ') if on_chart => app.show_dashboard(),
+        KeyCode::Char('l' | 'L') if on_chart => {
+            return app.change_interval(Interval::next).into_iter().collect()
         }
+        KeyCode::Char('h' | 'H') if on_chart => {
+            return app
+                .change_interval(Interval::previous)
+                .into_iter()
+                .collect()
+        }
+        _ if on_chart => {}
+
+        // Dashboard
+        KeyCode::Up | KeyCode::Char('k' | 'K') => app.navigate_up(),
+        KeyCode::Down | KeyCode::Char('j' | 'J') => app.navigate_down(),
+        KeyCode::Enter => return app.open_chart().into_iter().collect(),
+        KeyCode::Char('a' | 'A') => app.start_input(),
+        KeyCode::Char('d' | 'D') if confirming_delete => app.delete_selected(now),
+        KeyCode::Char('d' | 'D') if app.selected_item().is_some() => app.confirm_delete = true,
+        _ => {}
     }
-    None
+    Vec::new()
+}
+
+/// Touches du mode saisie : tout caractère de symbole va dans le buffer
+fn handle_input_key(app: &mut App, key: KeyEvent, now: Instant) -> Vec<AppCommand> {
+    match key.code {
+        KeyCode::Esc => app.cancel_input(),
+        KeyCode::Enter => {
+            let symbol = app.take_input();
+            return app.request_add(&symbol, now).into_iter().collect();
+        }
+        KeyCode::Backspace => {
+            app.input_buffer.pop();
+        }
+        KeyCode::Char(c)
+            if is_ticker_char(c)
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            app.input_buffer.push(c.to_ascii_uppercase());
+        }
+        _ => {}
+    }
+    Vec::new()
+}
+
+/// Caractères des symboles Yahoo : AAPL, BTC-USD, BRK.B, EURUSD=X, ^GSPC
+fn is_ticker_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '=' | '^')
 }
 
 // ============================================================================
@@ -249,21 +124,102 @@ pub fn get_char_from_event(event: &Event) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyModifiers;
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn code(k: KeyCode) -> KeyEvent {
+        KeyEvent::new(k, KeyModifiers::NONE)
+    }
+
+    fn app() -> App {
+        App::new(vec!["AAPL".into(), "TSLA".into()], None, Instant::now())
+    }
+
+    fn press(app: &mut App, k: KeyEvent) -> Vec<AppCommand> {
+        handle_key(app, k, Instant::now())
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, key(c));
+        }
+    }
 
     #[test]
-    fn test_is_quit_event() {
-        let quit_event = Event::Key(KeyEvent::new(
-            KeyCode::Char('q'),
-            event::KeyModifiers::empty(),
-        ));
-        assert!(is_quit_event(&quit_event));
+    fn typing_qqq_adds_instead_of_quitting() {
+        let mut app = app();
+        press(&mut app, key('a'));
+        type_str(&mut app, "qqq");
+        let commands = press(&mut app, code(KeyCode::Enter));
+        assert!(app.is_running());
+        assert_eq!(
+            commands,
+            [AppCommand::Add {
+                symbol: "QQQ".into()
+            }]
+        );
+    }
 
-        let other_event = Event::Key(KeyEvent::new(
-            KeyCode::Char('a'),
-            event::KeyModifiers::empty(),
-        ));
-        assert!(!is_quit_event(&other_event));
+    #[test]
+    fn forex_and_index_symbols_can_be_typed() {
+        let mut app = app();
+        press(&mut app, key('a'));
+        type_str(&mut app, "eurusd=x");
+        assert_eq!(app.input_buffer, "EURUSD=X");
+        app.input_buffer.clear();
+        type_str(&mut app, "^gspc");
+        assert_eq!(app.input_buffer, "^GSPC");
+    }
 
-        assert!(!is_quit_event(&Event::Tick));
+    #[test]
+    fn any_other_key_cancels_pending_delete() {
+        let mut app = app();
+        press(&mut app, key('d'));
+        press(&mut app, key('a')); // ouvre la saisie : annule la confirmation
+        press(&mut app, code(KeyCode::Esc));
+        press(&mut app, key('d'));
+        assert_eq!(app.watchlist.len(), 2, "un seul d ne doit pas supprimer");
+        press(&mut app, key('d'));
+        assert_eq!(app.watchlist.len(), 1);
+    }
+
+    #[test]
+    fn quit_needs_two_presses_and_ctrl_c_is_immediate() {
+        let mut app = app();
+        press(&mut app, key('q'));
+        assert!(app.is_running());
+        press(&mut app, key('q'));
+        assert!(!app.is_running());
+
+        let mut other = self::app();
+        press(
+            &mut other,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+        assert!(!other.is_running());
+    }
+
+    #[test]
+    fn interval_keys_only_on_chart() {
+        let mut app = app();
+        assert!(press(&mut app, key('l')).is_empty());
+        press(&mut app, code(KeyCode::Enter)); // ouvre le graphique (+ Load)
+        let commands = press(&mut app, key('l'));
+        assert_eq!(
+            commands,
+            [AppCommand::Load {
+                symbol: "AAPL".into(),
+                interval: Interval::H1
+            }]
+        );
+    }
+
+    #[test]
+    fn refresh_key_reloads_everything() {
+        let mut app = app();
+        assert_eq!(press(&mut app, key('r')).len(), 2);
     }
 }

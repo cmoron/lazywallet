@@ -849,10 +849,10 @@ fn render_header(frame: &mut Frame, app: &App, item: &crate::models::WatchlistIt
         .title(format!(" 🕯️ {} - {} ", item.symbol, item.name));
 
     // CONCEPT : Confirmation de quit two-step et loading indicator
-    // - Si app.is_awaiting_quit_confirmation(), affiche message d'avertissement
+    // - Si app.confirm_quit, affiche message d'avertissement
     // - Si app.is_loading(), affiche indicateur de chargement
     // - Sinon, affiche les infos normales avec shortcuts
-    let text = if app.is_awaiting_quit_confirmation() {
+    let text = if app.confirm_quit {
         // Message de confirmation de quit
         vec![Line::from(vec![
             Span::styled(

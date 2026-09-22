@@ -89,9 +89,6 @@ pub struct App {
     /// Buffer de saisie pour le mode Input
     pub input_buffer: String,
 
-    /// Prompt affiché en mode Input
-    pub input_prompt: String,
-
     /// Fichier de la watchlist (None dans les tests : rien n'est écrit)
     pub watchlist_path: Option<PathBuf>,
 
@@ -113,7 +110,6 @@ impl App {
             pending: 0,
             status: None,
             input_buffer: String::new(),
-            input_prompt: String::new(),
             watchlist_path,
             last_refresh: now,
         }
@@ -262,16 +258,6 @@ impl App {
         self.current_screen = Screen::Dashboard;
     }
 
-    /// Vérifie si on est sur le dashboard
-    pub fn is_on_dashboard(&self) -> bool {
-        self.current_screen == Screen::Dashboard
-    }
-
-    /// Vérifie si on est sur la vue graphique
-    pub fn is_on_chart(&self) -> bool {
-        self.current_screen == Screen::ChartView
-    }
-
     /// Change l'intervalle et recharge le ticker affiché
     ///
     /// CONCEPT RUST : fn pointer
@@ -283,34 +269,6 @@ impl App {
             symbol,
             interval: self.current_interval,
         })
-    }
-
-    // ========================================================================
-    // Confirmations (quit / delete en deux appuis)
-    // ========================================================================
-
-    pub fn request_quit(&mut self) {
-        self.confirm_quit = true;
-    }
-
-    pub fn cancel_quit(&mut self) {
-        self.confirm_quit = false;
-    }
-
-    pub fn is_awaiting_quit_confirmation(&self) -> bool {
-        self.confirm_quit
-    }
-
-    pub fn request_delete(&mut self) {
-        self.confirm_delete = true;
-    }
-
-    pub fn cancel_delete(&mut self) {
-        self.confirm_delete = false;
-    }
-
-    pub fn is_awaiting_delete_confirmation(&self) -> bool {
-        self.confirm_delete
     }
 
     // ========================================================================
@@ -351,40 +309,22 @@ impl App {
     // Input Mode
     // ========================================================================
 
-    /// Entre en mode input avec un prompt donné
-    pub fn start_input(&mut self, prompt: String) {
+    /// Ouvre la saisie d'un symbole (annule toute confirmation en cours)
+    pub fn start_input(&mut self) {
         self.current_screen = Screen::InputMode;
         self.input_buffer.clear();
-        self.input_prompt = prompt;
     }
 
-    /// Annule le mode input et retourne au dashboard
+    /// Annule la saisie et retourne au dashboard
     pub fn cancel_input(&mut self) {
         self.current_screen = Screen::Dashboard;
         self.input_buffer.clear();
-        self.input_prompt.clear();
     }
 
     /// Récupère la valeur saisie et retourne au dashboard
-    pub fn submit_input(&mut self) -> String {
+    pub fn take_input(&mut self) -> String {
         self.current_screen = Screen::Dashboard;
-        self.input_prompt.clear();
         std::mem::take(&mut self.input_buffer)
-    }
-
-    /// Ajoute un caractère au buffer d'input
-    pub fn append_char(&mut self, c: char) {
-        self.input_buffer.push(c);
-    }
-
-    /// Supprime le dernier caractère du buffer
-    pub fn backspace(&mut self) {
-        self.input_buffer.pop();
-    }
-
-    /// Vérifie si on est en mode input
-    pub fn is_in_input_mode(&self) -> bool {
-        self.current_screen == Screen::InputMode
     }
 }
 
