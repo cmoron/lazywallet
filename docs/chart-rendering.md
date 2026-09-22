@@ -84,7 +84,13 @@ d'1 h les labels intraday les plus anciens (évolution : `chrono-tz` avec
 `glyph(candle, y, scale)` vient de
 [cli-candlestick-chart](https://github.com/Julien-R44/cli-candlestick-chart) :
 trois zones (mèche haute, corps, mèche basse) et des seuils 0.25 / 0.75 pour une
-précision d'un demi-caractère (`┃ ╻ ╹ │ ╽ ╿ ╷ ╵`). `Scale` convertit un prix en
+précision d'un demi-caractère. Les mèches restent fines (`│ ╷ ╵`). Le corps a
+deux jeux de caractères selon la densité :
+
+- chandelles espacées (2 colonnes chacune) : blocs pleins `█ ▄ ▀`, un corps
+  lisible qui remplit la cellule ;
+- chandelles serrées (1 colonne) : traits `┃ ╻ ╹ ╽ ╿`, car des blocs voisins
+  formeraient un mur continu. `Scale` convertit un prix en
 hauteur fractionnaire ; une série plate est élargie de ±1 % pour éviter une
 division par zéro.
 

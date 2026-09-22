@@ -27,16 +27,47 @@ pub const MIN_HEIGHT: u16 = AXIS_ROWS + 5;
 /// Largeur provisoire de l'axe des prix pour la première passe
 const PROVISIONAL_AXIS: u16 = 10;
 
-// Caractères Unicode des chandeliers (algorithme de cli-candlestick-chart)
+// Caractères Unicode des mèches (algorithme de cli-candlestick-chart)
 const UNICODE_VOID: char = ' ';
-const UNICODE_BODY: char = '┃'; // Corps plein
-const UNICODE_HALF_BODY_BOTTOM: char = '╻'; // Corps avec espace en bas
-const UNICODE_HALF_BODY_TOP: char = '╹'; // Corps avec espace en haut
 const UNICODE_WICK: char = '│'; // Mèche pleine
-const UNICODE_TOP: char = '╽'; // Transition corps→mèche (haut)
-const UNICODE_BOTTOM: char = '╿'; // Transition corps→mèche (bas)
 const UNICODE_UPPER_WICK: char = '╷'; // Demi-mèche supérieure
 const UNICODE_LOWER_WICK: char = '╵'; // Demi-mèche inférieure
+
+/// Caractères du corps d'une chandelle
+///
+/// CONCEPT : Deux jeux selon la densité
+/// - Chandelles espacées : blocs pleins, un corps lisible qui remplit la cellule
+/// - Chandelles serrées : traits épais, sinon des blocs voisins forment un mur
+struct BodyGlyphs {
+    /// Corps plein
+    full: char,
+    /// Corps dans la moitié basse de la cellule
+    lower_half: char,
+    /// Corps dans la moitié haute de la cellule
+    upper_half: char,
+    /// Corps en bas + mèche au-dessus
+    top_transition: char,
+    /// Corps en haut + mèche en dessous
+    bottom_transition: char,
+}
+
+const THICK_BODY: BodyGlyphs = BodyGlyphs {
+    full: '█',
+    lower_half: '▄',
+    upper_half: '▀',
+    // Pas de caractère "demi-bloc + trait fin" : le demi-bloc prime, la mèche
+    // continue dans la cellule voisine
+    top_transition: '▄',
+    bottom_transition: '▀',
+};
+
+const THIN_BODY: BodyGlyphs = BodyGlyphs {
+    full: '┃',
+    lower_half: '╻',
+    upper_half: '╹',
+    top_transition: '╽',
+    bottom_transition: '╿',
+};
 
 const BULLISH_COLOR: Color = Color::Rgb(52, 208, 88); // Vert
 const BEARISH_COLOR: Color = Color::Rgb(234, 74, 90); // Rouge
@@ -93,7 +124,7 @@ impl Scale {
 /// Cœur de l'algorithme, adapté de cli-candlestick-chart : trois zones
 /// (mèche haute, corps, mèche basse) et des seuils 0.25 / 0.75 pour une
 /// précision d'un demi-caractère.
-fn glyph(candle: &OHLC, y: u16, scale: &Scale) -> char {
+fn glyph(candle: &OHLC, y: u16, scale: &Scale, body: &BodyGlyphs) -> char {
     let height_unit = f64::from(y);
 
     let high_y = scale.height(candle.high);
@@ -106,12 +137,12 @@ fn glyph(candle: &OHLC, y: u16, scale: &Scale) -> char {
     // ZONE 1 : Mèche supérieure (high → max)
     if high_y.ceil() >= height_unit && height_unit >= max_y.floor() {
         if max_y - height_unit > 0.75 {
-            output = UNICODE_BODY;
+            output = body.full;
         } else if (max_y - height_unit) > 0.25 {
             if (high_y - height_unit) > 0.75 {
-                output = UNICODE_TOP;
+                output = body.top_transition;
             } else {
-                output = UNICODE_HALF_BODY_BOTTOM;
+                output = body.lower_half;
             }
         } else if (high_y - height_unit) > 0.75 {
             output = UNICODE_WICK;
@@ -121,17 +152,17 @@ fn glyph(candle: &OHLC, y: u16, scale: &Scale) -> char {
     }
     // ZONE 2 : Corps (min → max)
     else if max_y.floor() >= height_unit && height_unit >= min_y.ceil() {
-        output = UNICODE_BODY;
+        output = body.full;
     }
     // ZONE 3 : Mèche inférieure (min → low)
     else if min_y.ceil() >= height_unit && height_unit >= low_y.floor() {
         if (min_y - height_unit) < 0.25 {
-            output = UNICODE_BODY;
+            output = body.full;
         } else if (min_y - height_unit) < 0.75 {
             if (low_y - height_unit) < 0.25 {
-                output = UNICODE_BOTTOM;
+                output = body.bottom_transition;
             } else {
-                output = UNICODE_HALF_BODY_TOP;
+                output = body.upper_half;
             }
         } else if low_y - height_unit < 0.25 {
             output = UNICODE_WICK;
@@ -244,10 +275,13 @@ fn axis_width(candles: &[OHLC], plot_width: u16, rows: u16, price_decimals: usiz
 }
 
 fn draw_candles(buf: &mut Buffer, area: Rect, visible: &[OHLC], columns: &[u16], scale: &Scale) {
+    // Chandelles espacées (au moins une colonne libre entre elles) : corps épais
+    let spaced = columns.windows(2).next().is_some_and(|w| w[1] - w[0] >= 2);
+    let body = if spaced { &THICK_BODY } else { &THIN_BODY };
     for (candle, &column) in visible.iter().zip(columns) {
         let style = Style::default().fg(candle_color(candle));
         for y in 1..=scale.rows {
-            let symbol = glyph(candle, y, scale);
+            let symbol = glyph(candle, y, scale, body);
             if symbol != UNICODE_VOID {
                 buf.get_mut(area.x + column, area.y + scale.rows - y)
                     .set_char(symbol)
@@ -452,5 +486,20 @@ mod tests {
             (0..27).any(|y| row(&buf, y).contains("199.5")),
             "prix courant affiché sur l'axe"
         );
+    }
+
+    #[test]
+    fn bodies_are_thick_when_candles_have_room() {
+        let d = data(300, |i| {
+            100.0 + f64::from(u32::try_from(i % 30).unwrap()) * 3.0
+        });
+        let symbols =
+            |buf: &Buffer| -> String { (0..buf.area.height).map(|y| row(buf, y)).collect() };
+        // 150 colonnes : chandelle + espace → corps en blocs pleins
+        let wide = symbols(&draw(&d, 150, 30));
+        assert!(wide.contains('█') && !wide.contains('┃'), "{wide}");
+        // 60 colonnes : chandelles serrées → corps fins, sinon elles forment un mur
+        let narrow = symbols(&draw(&d, 60, 30));
+        assert!(narrow.contains('┃') && !narrow.contains('█'), "{narrow}");
     }
 }
