@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::models::{Interval, WatchlistItem};
+use crate::watchlist_file;
 use crate::worker::{AppCommand, AppResult};
 
 /// Intervalle entre deux rafraîchissements automatiques des prix
@@ -301,8 +302,15 @@ impl App {
         self.save_watchlist(now);
     }
 
-    fn save_watchlist(&mut self, _now: Instant) {
-        // Écriture du fichier : Task 5
+    /// Sauvegarde la watchlist ; une erreur s'affiche sans interrompre l'app
+    fn save_watchlist(&mut self, now: Instant) {
+        let Some(path) = &self.watchlist_path else {
+            return;
+        };
+        let symbols: Vec<&str> = self.watchlist.iter().map(|i| i.symbol.as_str()).collect();
+        if let Err(e) = watchlist_file::save(path, &symbols) {
+            self.set_error(format!("{e:#}"), now);
+        }
     }
 
     // ========================================================================
@@ -478,5 +486,25 @@ mod tests {
         app.delete_selected(now);
         assert!(app.watchlist.is_empty() && app.selected_index == 0);
         app.delete_selected(now); // liste vide : aucun panic
+    }
+
+    #[test]
+    fn save_failure_reaches_status_line() {
+        // Un fichier à la place du dossier parent rend l'écriture impossible
+        let blocker = std::env::temp_dir().join(format!("lazywallet-app-{}", std::process::id()));
+        std::fs::write(&blocker, "").unwrap();
+        let now = Instant::now();
+        let mut app = App::new(
+            vec!["AAPL".into()],
+            Some(blocker.join("watchlist.txt")),
+            now,
+        );
+        app.delete_selected(now);
+        std::fs::remove_file(&blocker).unwrap();
+        assert!(
+            app.status.as_ref().is_some_and(|s| s.is_error),
+            "{:?}",
+            app.status
+        );
     }
 }

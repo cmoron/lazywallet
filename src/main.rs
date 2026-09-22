@@ -25,6 +25,7 @@ use tracing::info;
 use lazywallet::app::App;
 use lazywallet::ui::events::{handle_key, EventHandler};
 use lazywallet::ui::render;
+use lazywallet::watchlist_file;
 use lazywallet::worker::{spawn_worker, AppCommand, AppResult};
 
 // ============================================================================
@@ -82,9 +83,9 @@ fn main() -> Result<()> {
     let (result_tx, result_rx) = mpsc::channel();
     spawn_worker(command_rx, result_tx)?;
 
-    // Remplacé par le fichier de watchlist en Task 5
-    let symbols = vec!["AAPL".into(), "TSLA".into(), "BTC-USD".into()];
-    let mut app = App::new(symbols, None, Instant::now());
+    let path = watchlist_file::default_path()?;
+    let symbols = watchlist_file::load(&path)?;
+    let mut app = App::new(symbols, Some(path), Instant::now());
 
     install_panic_hook();
     let mut terminal = setup_terminal()?;
