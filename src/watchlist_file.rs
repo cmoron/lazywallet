@@ -53,13 +53,42 @@ pub fn load(path: &Path) -> Result<Vec<String>> {
 
 /// Écrit la watchlist, en créant le dossier si besoin
 ///
+/// Les commentaires et lignes vides d'un fichier existant sont conservés à leur
+/// place ; les symboles retirés disparaissent, les nouveaux sont ajoutés à la fin.
+///
 /// # Errors
-/// Si le dossier ne peut pas être créé ou le fichier écrit.
+/// Si le fichier existant ne peut pas être lu, le dossier créé ou le fichier écrit.
 pub fn save(path: &Path, symbols: &[&str]) -> Result<()> {
+    let existing = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("Lecture de {}", path.display())),
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut written: Vec<String> = Vec::new();
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            lines.push(line.to_string());
+            continue;
+        }
+        let symbol = trimmed.to_uppercase();
+        if symbols.contains(&symbol.as_str()) && !written.contains(&symbol) {
+            lines.push(symbol.clone());
+            written.push(symbol);
+        }
+    }
+    for symbol in symbols {
+        if !written.iter().any(|w| w == symbol) {
+            lines.push((*symbol).to_string());
+        }
+    }
+
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("Création de {}", dir.display()))?;
     }
-    let mut text = symbols.join("\n");
+    let mut text = lines.join("\n");
     text.push('\n');
     fs::write(path, text).with_context(|| format!("Écriture de {}", path.display()))
 }
@@ -98,5 +127,21 @@ mod tests {
         std::fs::write(&blocker, "").unwrap();
         assert!(save(&blocker.join("watchlist.txt"), &["AAPL"]).is_err());
         std::fs::remove_dir_all(blocker.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn save_keeps_hand_written_comments() {
+        // Revue : le premier ajout effaçait les commentaires écrits à la main
+        let path = temp_path("comments");
+        save(&path, &["AAPL"]).unwrap();
+        std::fs::write(&path, "# Mes tickers\n\nAAPL\n# crypto\nBTC-USD\n").unwrap();
+        save(&path, &["AAPL", "BTC-USD", "QQQ"]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("# Mes tickers") && text.contains("# crypto"),
+            "{text}"
+        );
+        assert_eq!(load(&path).unwrap(), ["AAPL", "BTC-USD", "QQQ"]);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }
