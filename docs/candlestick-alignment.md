@@ -329,15 +329,15 @@ fn render_x_axis(...) {
 
 ### Cas 1 : Terminal Trop Étroit (width < num_candles)
 
-**Exemple** : 100 chandeliers, 50 colonnes disponibles
+**Exemple** : 250 chandeliers, 108 colonnes disponibles (terminal de 120 colonnes)
 
-**Solution** :
-1. `visible_candles()` sélectionne déjà les 50 derniers chandeliers ✅
-2. `compute_positions(50, 50)` → spacing = 1.0
-3. Positions : `[0, 1, 2, 3, ..., 49]`
-4. Résultat : 1 chandelier par colonne, parfaitement aligné ✅
+**Comportement réel** :
+1. `visible_candles()` garde toujours les **250** derniers chandeliers, sans tenir compte de la largeur ⚠️
+2. `compute_candle_positions(108, 250)` → spacing ≈ 0.43
+3. Plusieurs chandeliers tombent sur la même colonne : le dernier écrit gagne, les autres disparaissent (≈142 sur 250)
+4. Les bornes de prix sont calculées sur les 250, y compris les chandeliers masqués
 
-**Priorité aux chandeliers récents** : Automatiquement respectée par `visible_candles()`.
+**Correction attendue** : garder `min(250, largeur)` chandeliers, pour que spacing ≥ 1.
 
 ### Cas 2 : Terminal Trop Large (num_candles < width)
 
@@ -370,12 +370,25 @@ Le chandelier est explicitement centré ✅
 
 **Flux** :
 1. Terminal redimensionné → nouveau `Rect` passé à `CandlestickRenderer::new()`
-2. Nouvelle `y_axis_width` calculée (8 ou 12)
+2. Nouvelle `y_axis_width` calculée (en pratique toujours 12, voir Limites Connues)
 3. Nouvelle `width` = `area.width - y_axis_width`
 4. `render_lines()` → nouveau `compute_positions()` avec nouvelle largeur
 5. Tout est recalculé avec les bonnes dimensions ✅
 
 ---
+
+## Limites Connues (revue 2026-09-22)
+
+Vérifiées par des tests jetables sur `8878ec3` :
+
+- **Largeur** : le renderer reçoit la zone *avec* bordure (`chunks[1]`) alors que le `Paragraph` dessine dans la zone intérieure (2 colonnes de moins). Chaque ligne fait 120 caractères pour 118 visibles : les 2 dernières colonnes (les chandeliers les plus récents) sont coupées. Idem en hauteur : `height = area.height - 6` réserve encore 3 lignes pour un header qui est déjà dans un autre chunk.
+- **Recouvrement** : voir Cas 1.
+- **Axe Y étroit** : `NARROW_Y_AXIS_WIDTH` (8) n'est jamais utilisé, car en dessous de 80 colonnes l'écran « terminal trop étroit » s'affiche avant. De plus `render_y_axis` produit toujours 12 caractères (`{:>9.2} │ `), donc activer ce mode décalerait l'axe X.
+- **`RegularDays` (H1)** : `should_show_label` compare chaque chandelier au **précédent**, pas au dernier label. Des chandeliers horaires consécutifs n'ont jamais 2 jours d'écart : aucun label en crypto, seulement le lundi (après le week-end) pour les actions.
+- **Ticks** : quand deux labels tombent sur la même colonne (spacing < 1), un `│` est quand même ajouté et décale le reste de la ligne d'un caractère.
+- **Fuseau** : heures et dates sont en UTC.
+
+Les tests unitaires proposés plus bas n'ont jamais été écrits.
 
 ## Détails Techniques
 
@@ -588,9 +601,9 @@ fn test_no_drift_accumulation() {
 
 #### Tests Visuels
 
-1. **Terminal 70 cols** : Y-axis = 8 chars, chandeliers alignés
+1. **Terminal 70 cols** : écran « Terminal trop étroit » (minimum 80)
 2. **Terminal 120 cols** : Y-axis = 12 chars, chandeliers répartis
-3. **200+ chandeliers** : Affiche les plus récents, pas de drift
+3. **200+ chandeliers** : aujourd'hui, recouvrement si plus de chandeliers que de colonnes
 4. **5 chandeliers** : Répartis uniformément, labels centrés
 5. **Resize dynamique** : Alignement maintenu pendant le resize
 
@@ -612,4 +625,4 @@ La stratégie **Position Array + Accumulator Pattern** garantit un alignement pa
 
 *Documentation rédigée le 2025-01-28*
 *Implémentation : src/ui/candlestick_text.rs*
-*Commits : 0222edf, c327290, 48b33f2*
+*Commits : 0222edf, c327290, 48b33f2 — limites ajoutées le 2026-09-22*

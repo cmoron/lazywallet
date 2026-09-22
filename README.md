@@ -4,26 +4,24 @@ A fast, lightweight Terminal User Interface (TUI) for tracking cryptocurrency an
 
 ## ✨ Features
 
-- **Real-time Market Data**: Fetches live prices from Yahoo Finance API
+- **Market Data**: Fetches prices and OHLC history from the Yahoo Finance chart API (on startup, on add, and on interval change — no periodic refresh yet)
 - **Interactive Watchlist**: Track multiple tickers with daily change percentages
 - **Beautiful Candlestick Charts**: Unicode-based chart visualization directly in your terminal
 - **Multiple Timeframes**: Switch between 5m, 15m, 30m, 1h, 4h, 1d, and 1w intervals
 - **Vim-inspired Navigation**: Efficient keyboard shortcuts for power users
-- **Auto-refresh**: Data automatically updates when switching intervals
 - **Safe Operations**: Two-step confirmation for quit and delete actions
-- **Structured Logging**: Comprehensive logging system for debugging
+- **Structured Logging**: Daily-rotated log files for debugging
 
 ## 🚀 Installation
 
 ### Prerequisites
 
-- Rust 1.70 or higher
-- Cargo (comes with Rust)
+- A recent stable Rust toolchain (last verified with Rust 1.95)
 
 ### Building from Source
 
 ```bash
-git clone https://github.com/yourusername/lazywallet.git
+git clone https://github.com/cmoron/lazywallet.git
 cd lazywallet
 cargo build --release
 ```
@@ -40,7 +38,7 @@ cargo run
 ./target/release/lazywallet
 ```
 
-The application starts with an empty watchlist. Add tickers to get started!
+The application starts with a hardcoded watchlist (`AAPL`, `TSLA`, `BTC-USD`), loaded before the UI appears. The watchlist is not persisted: tickers you add or delete are lost on exit.
 
 ### Keyboard Shortcuts
 
@@ -62,6 +60,7 @@ The application starts with an empty watchlist. Add tickers to get started!
 | `h` | Switch to previous interval (cycle: 5m → 15m → 30m → 1h → 4h → 1d → 1w) |
 | `l` | Switch to next interval |
 | `ESC` / `Space` | Return to dashboard |
+| `q` | Quit application (requires confirmation) |
 
 #### Input Mode (Adding Ticker)
 
@@ -71,14 +70,17 @@ The application starts with an empty watchlist. Add tickers to get started!
 | `ESC` | Cancel input |
 | `Backspace` | Delete last character |
 
+Accepted characters: letters, digits, `-` and `.`.
+
 ### Supported Tickers
 
 LazyWallet supports any ticker available on Yahoo Finance:
 
 - **Stocks**: `AAPL`, `GOOGL`, `TSLA`, `MSFT`, etc.
 - **Cryptocurrencies**: `BTC-USD`, `ETH-USD`, `SOL-USD`, etc.
-- **ETFs**: `SPY`, `QQQ`, `VOO`, etc.
-- **Forex**: `EURUSD=X`, `GBPUSD=X`, etc.
+- **ETFs**: `SPY`, `VOO`, etc.
+
+Forex (`EURUSD=X`) and index (`^GSPC`) symbols exist on Yahoo but cannot be typed yet (`=` and `^` are rejected by the input), and tickers containing `Q` (e.g. `QQQ`) currently trigger the quit shortcut — see Known Issues.
 
 ## 🎨 Interface
 
@@ -119,12 +121,12 @@ src/
 ├── models/
 │   ├── mod.rs
 │   ├── ohlc.rs           # OHLC data structures and intervals
-│   ├── ticker.rs         # Ticker model
+│   ├── ticker.rs         # TickerType detection (Ticker struct unused)
 │   └── watchlist_item.rs # Watchlist item with data
 ├── ui/
 │   ├── mod.rs
 │   ├── dashboard.rs      # Main dashboard rendering
-│   ├── chart.rs          # Chart view rendering
+│   ├── chart.rs          # Legacy line chart (unused)
 │   ├── candlestick_text.rs # Unicode candlestick drawing
 │   └── events.rs         # Keyboard event handling
 ├── app.rs                # Application state management
@@ -136,19 +138,26 @@ src/
 
 ### Logging
 
-Logs are written to `./logs/lazywallet.log.YYYY-MM-DD` with the following levels:
+Logs are written to `./logs/lazywallet.log.YYYY-MM-DD`, relative to the directory you launch from. Default filter is `lazywallet=debug,info`; override it with `RUST_LOG` (e.g. `RUST_LOG=lazywallet=trace`). Levels used:
 - `DEBUG`: API calls, data parsing details
 - `INFO`: User actions, state changes
 - `ERROR`: API failures, parsing errors
 
 ### Intervals and Timeframes
 
-The application automatically selects appropriate timeframes for each interval:
-- **5m / 15m**: 7 days of data
-- **30m / 1h**: 30 days of data
-- **4h**: 90 days of data
-- **1d**: 180 days of data
-- **1w**: 365 days of data
+Each interval fetches a fixed history window; the chart then shows at most the last 250 candles:
+
+| Interval | History fetched |
+|----------|-----------------|
+| 5m  | 7 days |
+| 15m | 14 days |
+| 30m (default) | 30 days |
+| 1h  | 6 months |
+| 4h  | 1 year |
+| 1d  | 2 years |
+| 1w  | 5 years |
+
+Times and dates on the chart axis are shown in UTC.
 
 ## 🤝 Contributing
 
@@ -158,13 +167,13 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/lazywallet.git
+git clone https://github.com/cmoron/lazywallet.git
 cd lazywallet
 
 # Run in development mode with logs
 cargo run
 
-# Run tests
+# Run tests (the Yahoo test hits the network)
 cargo test
 
 # Check for warnings
@@ -186,9 +195,16 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 🐛 Known Issues
 
-- 1-minute interval (`1m`) is disabled due to Yahoo Finance API limitations (max 7 days of data)
-- Market data may have a slight delay depending on Yahoo Finance
-- Some tickers may not be available depending on your region
+- Typing `q`/`Q` in the add-ticker prompt triggers the quit confirmation (twice = the app exits).
+- `=` and `^` cannot be typed, so forex and index tickers cannot be added.
+- The chart draws 2 columns wider than its frame: the most recent candles on the right edge are clipped.
+- When there are more candles (up to 250) than columns, candles overwrite each other instead of being dropped from the left.
+- The 1h chart shows almost no date labels (none at all for 24/7 markets such as crypto).
+- The interval is global: opening another ticker's chart after changing the interval shows `30m → 1d ⚠️` and does not reload.
+- The dashboard "daily" change is computed from whatever interval was last loaded for that ticker (on 1w it is a weekly change), and from the day's first open rather than the previous close.
+- Fetch and add errors are only logged, never shown in the UI; HTTP requests have no timeout.
+- `cargo test` has 2 failing tests (stale expectations in `models::ohlc`).
+- Market data may be delayed, and some tickers may not be available depending on your region.
 
 ## 🚧 Roadmap
 
