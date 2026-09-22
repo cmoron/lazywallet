@@ -1,34 +1,33 @@
 // ============================================================================
 // API Client : Yahoo Finance
 // ============================================================================
-// Récupère les données financières depuis Yahoo Finance
+// Récupère les données financières depuis l'endpoint `v8/finance/chart`
 //
 // CONCEPTS RUST AVANCÉS :
 // 1. async/await : programmation asynchrone (non-bloquante)
-// 2. Result<T, E> : gestion d'erreurs avec contexte
+// 2. Result<T, E> : gestion d'erreurs avec contexte (anyhow)
 // 3. Serde : désérialisation JSON automatique
-// 4. Lifetimes : gestion de la durée de vie des références
+// 4. let-else : sortir tôt quand un motif ne correspond pas
 // ============================================================================
 
-use anyhow::{Context, Result};
-use chrono::DateTime;
-use serde::Deserialize;
-use tracing::{debug, error, info, instrument, warn};
+use std::time::Duration;
 
-use crate::models::{Interval, OHLCData, Timeframe, OHLC};
+use anyhow::{bail, Context, Result};
+use chrono::{DateTime, FixedOffset, Utc};
+use reqwest::StatusCode;
+use serde::Deserialize;
+use tracing::{debug, instrument, warn};
+
+use crate::models::{FetchedTicker, Interval, OHLCData, Quote, OHLC};
+
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 
 // ============================================================================
 // Structures pour parser la réponse JSON de Yahoo Finance
 // ============================================================================
-// Yahoo retourne un JSON complexe, on définit des structures qui matchent
-// exactement la structure JSON pour que serde puisse désérialiser automatiquement
-//
-// CONCEPT RUST : #[serde(rename = "...")]
-// - Permet de mapper un nom de champ JSON différent du nom Rust
-// - Exemple : "regularMarketPrice" (JSON) -> "regular_market_price" (Rust)
+// On ne déclare que les champs utilisés : serde ignore les autres.
 // ============================================================================
 
-/// Réponse complète de l'API Yahoo Finance
 #[derive(Debug, Deserialize)]
 struct YahooResponse {
     chart: Chart,
@@ -36,8 +35,8 @@ struct YahooResponse {
 
 #[derive(Debug, Deserialize)]
 struct Chart {
-    result: Vec<ChartResult>,
-    error: Option<serde_json::Value>,
+    /// null quand Yahoo ne connaît pas le symbole
+    result: Option<Vec<ChartResult>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,22 +48,25 @@ struct ChartResult {
 
 /// Métadonnées du ticker
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")] // Convertit automatiquement snake_case -> camelCase
+#[serde(rename_all = "camelCase")] // regular_market_price <- "regularMarketPrice"
 struct Meta {
-    symbol: String,
     long_name: Option<String>,
     regular_market_price: Option<f64>,
-    chart_previous_close: Option<f64>,
+    currency: Option<String>,
+    price_hint: Option<usize>,
+    /// Décalage de la place en secondes (champ Yahoo tout en minuscules)
+    #[serde(rename = "gmtoffset")]
+    gmt_offset: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Indicators {
-    quote: Vec<Quote>,
+    quote: Vec<QuoteArrays>,
 }
 
-/// Données OHLCV (Open, High, Low, Close, Volume)
+/// Données OHLCV en colonnes : une valeur par timestamp, null si absente
 #[derive(Debug, Deserialize)]
-struct Quote {
+struct QuoteArrays {
     open: Option<Vec<Option<f64>>>,
     high: Option<Vec<Option<f64>>>,
     low: Option<Vec<Option<f64>>>,
@@ -76,247 +78,137 @@ struct Quote {
 // Fonctions publiques de l'API
 // ============================================================================
 
-/// Récupère les données d'un ticker depuis Yahoo Finance
+/// Client HTTP partagé par tous les appels (pool de connexions réutilisé)
 ///
-/// CONCEPT RUST : async fn
-/// - Fonction asynchrone qui peut être "await"ée
-/// - Ne bloque pas le thread pendant les I/O (network, disk)
-/// - Retourne une Future qui doit être .await pour obtenir le résultat
+/// CONCEPT : Timeout obligatoire — sans lui, une requête bloquée fige le worker.
+pub fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("Échec de la création du client HTTP")
+}
+
+/// Récupère chandelles, prix courant et métadonnées d'un ticker
 ///
-/// CONCEPT RUST : Result<T, E>
-/// - Ok(value) : succès
-/// - Err(error) : erreur
-/// - Propagation d'erreur avec ? operator
-///
-/// # Arguments
-/// * `symbol` - Symbole du ticker (ex: "AAPL", "TSLA", "BTC-USD")
-/// * `timeframe` - Période de temps souhaitée
-///
-/// # Retourne
-/// * `Result<(OHLCData, Option<String>)>` - Tuple contenant les données OHLC et le long_name du ticker
-///
-/// # Exemple
-/// let (data, long_name) = fetch_ticker_data("AAPL", Interval::M30).await?;
-/// println!("Prix actuel : {}", data.last().unwrap().close);
-/// println!("Nom : {}", long_name.unwrap_or_else(|| "Unknown".to_string()));
-///
-/// CONCEPT RUST : #[instrument]
-/// - Macro tracing qui ajoute automatiquement un span
-/// - Inclut les paramètres de la fonction dans les logs
-/// - Tous les logs à l'intérieur auront le contexte symbol + interval
-#[instrument(skip(interval), fields(interval = ?interval))]
+/// Les messages d'erreur commencent par le symbole : ils sont affichés tels quels.
+#[instrument(skip(client))]
 pub async fn fetch_ticker_data(
+    client: &reqwest::Client,
     symbol: &str,
     interval: Interval,
-) -> Result<(OHLCData, Option<String>)> {
-    // Le timeframe est déterminé automatiquement selon l'intervalle
-    let timeframe = interval.default_timeframe();
+) -> Result<FetchedTicker> {
+    let url = build_yahoo_url(symbol, interval, Utc::now().timestamp());
+    debug!(%url, "Requête Yahoo Finance");
 
-    // Construit l'URL de l'API Yahoo Finance
-    // CONCEPT RUST : format! macro
-    // - Équivalent à sprintf en C ou f-string en Python
-    // - Type-safe et performant
-    let url = build_yahoo_url(symbol, interval, timeframe);
-    debug!(url = %url, interval = %interval.label(), timeframe = %timeframe.label(), "Built Yahoo Finance API URL");
-
-    // CONCEPT RUST : async/await
-    // - reqwest::get() retourne une Future
-    // - .await suspend l'exécution jusqu'à ce que la requête soit terminée
-    // - ? propage l'erreur si la requête échoue
-    //
-    // CONCEPT RUST : Context trait (anyhow)
-    // - .context() ajoute du contexte à une erreur
-    // - Aide au debugging en donnant plus d'infos
-    //
-    // Ajout d'un User-Agent pour éviter le blocage par Yahoo
-    debug!("Creating HTTP client");
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .build()
-        .context("Échec de la création du client HTTP")?;
-
-    debug!("Sending HTTP request to Yahoo Finance");
     let response = client
         .get(&url)
         .send()
         .await
-        .context("Échec de la requête HTTP vers Yahoo Finance")?;
+        .with_context(|| format!("{symbol} : Yahoo Finance injoignable"))?;
 
-    let status = response.status();
-    debug!(status = %status, "Received HTTP response");
-
-    // Vérifie que la réponse est un succès HTTP (200-299)
-    if !status.is_success() {
-        error!(status = %status, "Yahoo Finance returned error status");
-        anyhow::bail!("Yahoo Finance a retourné une erreur : HTTP {}", status);
+    match response.status() {
+        StatusCode::NOT_FOUND => bail!("{symbol} : symbole inconnu de Yahoo Finance"),
+        status if !status.is_success() => bail!("{symbol} : Yahoo Finance a répondu {status}"),
+        _ => {}
     }
 
-    // Parse la réponse JSON
-    // CONCEPT RUST : Serde deserialization
-    // - .json::<T>() désérialise automatiquement le JSON vers le type T
-    // - Vérifie que la structure JSON match exactement
-    debug!("Parsing JSON response");
-    let yahoo_response: YahooResponse = response
+    let body: YahooResponse = response
         .json()
         .await
-        .context("Échec du parsing JSON de la réponse Yahoo")?;
+        .with_context(|| format!("{symbol} : réponse Yahoo illisible"))?;
 
-    // Convertit la réponse Yahoo en notre structure OHLCData et extrait le long_name
-    debug!("Parsing Yahoo response to OHLCData");
-    let (data, long_name) = parse_yahoo_response(yahoo_response, symbol, interval, timeframe)?;
-
-    info!(candles = data.len(), long_name = ?long_name, "Successfully fetched ticker data");
-    Ok((data, long_name))
+    parse_yahoo_response(body, symbol, interval)
 }
 
-/// Construit l'URL de l'API Yahoo Finance
+/// Construit l'URL de l'API chart
 ///
-/// CONCEPT RUST : &str vs String
-/// - Fonction prend &str (référence, pas d'allocation)
-/// - Retourne String (owned, allouée)
-/// - Pas de lifetime ici car String est owned
-///
-/// L'intervalle est maintenant configurable (1m, 5m, 30m, 1h, 1d, etc.)
-fn build_yahoo_url(symbol: &str, interval: Interval, timeframe: Timeframe) -> String {
-    // Calcule les timestamps Unix
-    let now = chrono::Utc::now().timestamp();
-    let days_ago = timeframe.to_days() as i64;
-    let period1 = now - (days_ago * 24 * 60 * 60);
-    let period2 = now;
-
-    // Utilise l'intervalle fourni, converti au format Yahoo (ex: "30m", "1h", "1d")
-    let interval_str = interval.to_yahoo_string();
-
+/// `^` est encodé (%5E) : les indices comme ^GSPC passent sans ambiguïté dans l'URL.
+/// `now` est un paramètre pour rendre la fonction testable.
+fn build_yahoo_url(symbol: &str, interval: Interval, now: i64) -> String {
+    let period1 = now - interval.history_days() * 86_400;
+    let symbol = symbol.replace('^', "%5E");
     format!(
-        "https://query1.finance.yahoo.com/v8/finance/chart/{}?interval={}&period1={}&period2={}",
-        symbol, interval_str, period1, period2
+        "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={}&period1={period1}&period2={now}",
+        interval.to_yahoo_string()
     )
 }
 
-/// Parse la réponse JSON de Yahoo et la convertit en OHLCData avec le long_name
-///
-/// CONCEPT RUST : Ownership et borrowing
-/// - yahoo_response est "moved" (pas de &), on en devient propriétaire
-/// - symbol est borrowed (&str), on ne le copie pas
-/// - interval et timeframe sont Copy (enums simples), donc copiés automatiquement
-///
-/// Retourne un tuple (OHLCData, Option<String>) où le String est le long_name du ticker
+/// Convertit la réponse Yahoo en `FetchedTicker`
 fn parse_yahoo_response(
-    yahoo_response: YahooResponse,
+    body: YahooResponse,
     symbol: &str,
     interval: Interval,
-    timeframe: Timeframe,
-) -> Result<(OHLCData, Option<String>)> {
-    // Récupère le premier résultat
-    // CONCEPT RUST : Pattern matching avec if let
-    let result = yahoo_response
+) -> Result<FetchedTicker> {
+    let result = body
         .chart
         .result
-        .into_iter() // Consomme le Vec (move)
-        .next() // Prend le premier élément
-        .context("Aucune données retournée par Yahoo Finance")?;
+        .and_then(|results| results.into_iter().next())
+        .with_context(|| format!("{symbol} : aucune donnée renvoyée par Yahoo"))?;
 
-    // Extrait le long_name depuis les métadonnées
-    let long_name = result.meta.long_name.clone();
+    let meta = result.meta;
+    let offset_seconds = meta.gmt_offset.unwrap_or(0);
+    let utc_offset = FixedOffset::east_opt(offset_seconds)
+        .with_context(|| format!("{symbol} : décalage horaire invalide ({offset_seconds} s)"))?;
 
-    // Crée la structure OHLCData avec interval et timeframe
-    let mut ohlc_data = OHLCData::new(symbol.to_string(), interval, timeframe);
+    let mut data = OHLCData::new(symbol.to_string(), interval, utc_offset);
 
-    // Récupère les arrays de données
-    // CONCEPT RUST : Option unwrap et default
     let timestamps = result.timestamp.unwrap_or_default();
-    debug!(
-        timestamp_count = timestamps.len(),
-        "Received timestamps from Yahoo"
-    );
-
     let quote = result
         .indicators
         .quote
         .into_iter()
         .next()
-        .context("Pas de données OHLC dans la réponse")?;
-
+        .with_context(|| format!("{symbol} : pas de données OHLC dans la réponse"))?;
     let opens = quote.open.unwrap_or_default();
     let highs = quote.high.unwrap_or_default();
     let lows = quote.low.unwrap_or_default();
     let closes = quote.close.unwrap_or_default();
     let volumes = quote.volume.unwrap_or_default();
 
-    // CONCEPT RUST : Iterators et zip
-    // - .iter() crée un itérateur sur une slice
-    // - .enumerate() ajoute l'index
-    // - zip combine plusieurs itérateurs
-    // - for loop consomme l'itérateur
-    let mut skipped_count = 0;
+    // CONCEPT RUST : let-else
+    // - Yahoo met null dans les colonnes pour les chandelles sans cotation
+    // - Si une des 4 valeurs manque, on saute la chandelle
+    let value = |column: &[Option<f64>], i: usize| column.get(i).copied().flatten();
+    let mut skipped = 0;
     for (i, &timestamp) in timestamps.iter().enumerate() {
-        // Extrait les valeurs à l'index i, skip si None
-        // CONCEPT RUST : Pattern matching avec match
-        let open = match opens.get(i).and_then(|&v| v) {
-            Some(v) => v,
-            None => {
-                skipped_count += 1;
-                continue; // Skip cette chandelle si pas de données
-            }
+        let (Some(open), Some(high), Some(low), Some(close)) = (
+            value(&opens, i),
+            value(&highs, i),
+            value(&lows, i),
+            value(&closes, i),
+        ) else {
+            skipped += 1;
+            continue;
         };
-
-        let high = match highs.get(i).and_then(|&v| v) {
-            Some(v) => v,
-            None => {
-                skipped_count += 1;
-                continue;
-            }
-        };
-
-        let low = match lows.get(i).and_then(|&v| v) {
-            Some(v) => v,
-            None => {
-                skipped_count += 1;
-                continue;
-            }
-        };
-
-        let close = match closes.get(i).and_then(|&v| v) {
-            Some(v) => v,
-            None => {
-                skipped_count += 1;
-                continue;
-            }
-        };
-
-        let volume = volumes.get(i).and_then(|&v| v).unwrap_or(0);
-
-        // Convertit le timestamp Unix en DateTime<Utc>
-        // CONCEPT RUST : Result et ? operator
-        let datetime = DateTime::from_timestamp(timestamp, 0).context("Timestamp invalide")?;
-
-        // Crée et ajoute la chandelle OHLC
-        ohlc_data.add_candle(OHLC::new(datetime, open, high, low, close, volume));
+        let volume = volumes.get(i).copied().flatten().unwrap_or(0);
+        let datetime = DateTime::from_timestamp(timestamp, 0)
+            .with_context(|| format!("{symbol} : timestamp invalide {timestamp}"))?;
+        data.add_candle(OHLC::new(datetime, open, high, low, close, volume));
     }
-
-    // Log des statistiques de parsing
-    if skipped_count > 0 {
+    if skipped > 0 {
         warn!(
-            skipped = skipped_count,
+            skipped,
             total = timestamps.len(),
-            "Skipped candles with missing data"
+            "Chandelles incomplètes ignorées"
         );
     }
 
-    debug!(
-        parsed = ohlc_data.len(),
-        total = timestamps.len(),
-        skipped = skipped_count,
-        "Finished parsing OHLC data"
-    );
+    let Some(last) = data.last() else {
+        bail!("{symbol} : aucune chandelle valide");
+    };
+    let quote = Quote {
+        price: meta.regular_market_price.unwrap_or(last.close),
+        previous_close: data.previous_session_close(),
+    };
 
-    // Vérifie qu'on a au moins quelques données
-    if ohlc_data.is_empty() {
-        error!("No valid OHLC data found");
-        anyhow::bail!("Aucune donnée OHLC valide trouvée pour {}", symbol);
-    }
-
-    Ok((ohlc_data, long_name))
+    Ok(FetchedTicker {
+        data,
+        long_name: meta.long_name,
+        quote,
+        currency: meta.currency,
+        price_decimals: meta.price_hint.unwrap_or(2),
+    })
 }
 
 // ============================================================================
@@ -326,38 +218,84 @@ fn parse_yahoo_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
-    #[test]
-    fn test_build_yahoo_url() {
-        let url = build_yahoo_url("AAPL", Interval::D1, Timeframe::OneWeek);
-        assert!(url.contains("AAPL"));
-        assert!(url.contains("interval=1d"));
-        assert!(url.contains("yahoo.com"));
+    fn fixture(result: &str) -> YahooResponse {
+        serde_json::from_str(&format!(
+            r#"{{"chart":{{"result":{result},"error":null}}}}"#
+        ))
+        .unwrap()
     }
 
-    // Test async nécessite tokio test runtime
-    // CONCEPT RUST : #[tokio::test]
-    // - Macro qui setup un runtime tokio pour le test
-    // - Permet d'utiliser .await dans les tests
-    #[tokio::test]
-    async fn test_fetch_ticker_data() {
-        // Test avec un vrai appel API (peut échouer si pas de connexion)
-        let result = fetch_ticker_data("AAPL", Interval::D1).await;
+    fn ts(y: i32, m: u32, d: u32, h: u32, min: u32) -> i64 {
+        Utc.with_ymd_and_hms(y, m, d, h, min, 0)
+            .unwrap()
+            .timestamp()
+    }
 
-        // On vérifie juste que l'appel fonctionne
-        // (on ne vérifie pas les données car elles changent)
-        match result {
-            Ok((data, long_name)) => {
-                assert_eq!(data.symbol, "AAPL");
-                assert!(!data.is_empty());
-                println!("✓ Récupéré {} chandelles pour AAPL", data.len());
-                if let Some(name) = long_name {
-                    println!("✓ Long name: {}", name);
-                }
+    #[test]
+    fn parses_candles_quote_and_offset() {
+        let (t1, t2, t3, t4) = (
+            ts(2026, 9, 21, 13, 30),
+            ts(2026, 9, 21, 19, 30),
+            ts(2026, 9, 22, 13, 30),
+            ts(2026, 9, 22, 14, 0),
+        );
+        let body = fixture(&format!(
+            r#"[{{"meta":{{"longName":"Apple Inc.","regularMarketPrice":103.5,"gmtoffset":-14400,"currency":"USD","priceHint":2}},
+                "timestamp":[{t1},{t2},{t3},{t4}],
+                "indicators":{{"quote":[{{"open":[100,101,null,103],"high":[101,102,103,104],"low":[99,100,101,102],
+                                        "close":[100.5,101.5,102.5,103.2],"volume":[1,2,3,null]}}]}}}}]"#
+        ));
+        let fetched = parse_yahoo_response(body, "AAPL", Interval::M30).unwrap();
+        assert_eq!(fetched.data.len(), 3); // la chandelle avec open null est ignorée
+        assert_eq!(fetched.data.utc_offset.local_minus_utc(), -14400);
+        assert_eq!(
+            fetched.quote,
+            Quote {
+                price: 103.5,
+                previous_close: Some(101.5)
             }
-            Err(e) => {
-                println!("⚠ Test skippé (pas de connexion?) : {}", e);
-            }
-        }
+        );
+        assert_eq!(fetched.long_name.as_deref(), Some("Apple Inc."));
+        assert_eq!(
+            (fetched.currency.as_deref(), fetched.price_decimals),
+            (Some("USD"), 2)
+        );
+    }
+
+    #[test]
+    fn null_result_is_a_readable_error() {
+        let err = parse_yahoo_response(fixture("null"), "NOPE", Interval::D1).unwrap_err();
+        assert!(err.to_string().contains("NOPE"), "{err}");
+    }
+
+    #[test]
+    fn all_null_quotes_is_a_readable_error() {
+        let t = ts(2026, 9, 22, 0, 0);
+        let body = fixture(&format!(
+            r#"[{{"meta":{{}},"timestamp":[{t}],"indicators":{{"quote":[{{"open":[null],"high":[null],"low":[null],"close":[null],"volume":[null]}}]}}}}]"#
+        ));
+        let err = parse_yahoo_response(body, "AAPL", Interval::D1).unwrap_err();
+        assert!(err.to_string().contains("AAPL"), "{err}");
+    }
+
+    #[test]
+    fn url_uses_history_window() {
+        let url = build_yahoo_url("^GSPC", Interval::D1, 1_000_000_000);
+        assert!(
+            url.ends_with("/%5EGSPC?interval=1d&period1=936928000&period2=1000000000"),
+            "{url}"
+        );
+    }
+
+    // Test réseau : exclu par défaut, `cargo test -- --ignored` pour le lancer
+    #[tokio::test]
+    #[ignore = "appelle Yahoo Finance"]
+    async fn fetch_real_ticker() {
+        let fetched = fetch_ticker_data(&http_client().unwrap(), "AAPL", Interval::D1)
+            .await
+            .unwrap();
+        assert!(!fetched.data.is_empty());
     }
 }

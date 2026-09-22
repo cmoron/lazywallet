@@ -5,7 +5,6 @@
 // ============================================================================
 
 pub mod candlestick_text;
-pub mod chart; // Rendu du graphique ligne
 pub mod dashboard; // Rendu de l'interface principale
 pub mod events; // Gestion des événements clavier // Rendu des chandeliers japonais (Unicode text)
 

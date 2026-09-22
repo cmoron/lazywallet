@@ -23,9 +23,9 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use tracing::{debug, error, info};
 
-use lazywallet::api::yahoo::fetch_ticker_data;
+use lazywallet::api::yahoo::{fetch_ticker_data, http_client};
 use lazywallet::app::App;
-use lazywallet::models::{Interval, OHLCData, WatchlistItem};
+use lazywallet::models::{FetchedTicker, Interval, WatchlistItem};
 use lazywallet::ui::{events::EventHandler, render};
 
 // ============================================================================
@@ -62,13 +62,15 @@ enum AppCommand {
 #[derive(Debug)]
 enum AppResult {
     /// Données d'un ticker rechargées avec succès
-    TickerDataLoaded { index: usize, data: OHLCData },
+    TickerDataLoaded {
+        index: usize,
+        fetched: FetchedTicker,
+    },
 
     /// Nouveau ticker ajouté avec succès
     TickerAdded {
         symbol: String,
-        name: String,
-        data: OHLCData,
+        fetched: FetchedTicker,
     },
 
     /// Erreur lors du chargement
@@ -250,6 +252,7 @@ fn main() -> Result<()> {
 /// - .await : suspend jusqu'à résolution
 /// - ? : propage les erreurs
 async fn load_watchlist_data() -> Result<Vec<WatchlistItem>> {
+    let client = http_client()?;
     // Définit les tickers à charger
     // CONCEPT RUST : Array de tuples
     // - (symbol, name) pour chaque ticker
@@ -275,25 +278,12 @@ async fn load_watchlist_data() -> Result<Vec<WatchlistItem>> {
         // Appel API pour récupérer les données
         // Utilise l'intervalle par défaut (30m)
         // Le timeframe est déterminé automatiquement par l'intervalle
-        match fetch_ticker_data(symbol, Interval::default()).await {
-            Ok((data, long_name)) => {
-                // Succès : crée un WatchlistItem avec les données
-                // Utilise le long_name de Yahoo si disponible, sinon le nom fourni
-                let display_name = long_name.unwrap_or_else(|| name.to_string());
-                info!(ticker = %symbol, candles = data.len(), long_name = %display_name, "Ticker data fetched successfully");
-                watchlist.push(WatchlistItem::with_data(
-                    symbol.to_string(),
-                    display_name,
-                    data,
-                ));
-                info!("    ✓ OK");
-            }
-            Err(e) => {
-                // Erreur : affiche et crée un item sans données
-                error!(ticker = %symbol, error = ?e, "Failed to fetch ticker data");
-                watchlist.push(WatchlistItem::new(symbol.to_string(), name.to_string()));
-            }
+        let mut item = WatchlistItem::new(symbol.to_string());
+        match fetch_ticker_data(&client, symbol, Interval::default()).await {
+            Ok(fetched) => item.apply(fetched),
+            Err(e) => error!(ticker = %symbol, error = ?e, "Failed to fetch ticker data"),
         }
+        watchlist.push(item);
 
         // Petit délai entre les requêtes (rate limiting)
         if i < tickers.len() - 1 {
@@ -336,6 +326,14 @@ fn spawn_background_worker(
         // - Chaque thread peut avoir son propre runtime
         // - Permet d'exécuter du code async dans un thread standard
         let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        // Temporaire : ce worker est remplacé par lazywallet::worker (Task 3)
+        let client = match http_client() {
+            Ok(client) => client,
+            Err(e) => {
+                error!(error = ?e, "Client HTTP indisponible, worker arrêté");
+                return;
+            }
+        };
 
         // Boucle de traitement des commandes
         // CONCEPT : Command processing loop
@@ -367,14 +365,14 @@ fn spawn_background_worker(
                             // CONCEPT : block_on dans un worker thread
                             // - block_on() bloque le thread worker (pas l'UI)
                             // - L'UI continue à tourner normalement
-                            let result = runtime
-                                .block_on(async { fetch_ticker_data(&symbol, interval).await });
+                            let result = runtime.block_on(async {
+                                fetch_ticker_data(&client, &symbol, interval).await
+                            });
 
                             match result {
-                                Ok((data, long_name)) => {
-                                    info!(ticker = %symbol, interval = %interval.label(), candles = data.len(), long_name = ?long_name, "Data loaded successfully");
-                                    let _ =
-                                        result_tx.send(AppResult::TickerDataLoaded { index, data });
+                                Ok(fetched) => {
+                                    let _ = result_tx
+                                        .send(AppResult::TickerDataLoaded { index, fetched });
                                 }
                                 Err(e) => {
                                     error!(ticker = %symbol, error = ?e, "Failed to load ticker data");
@@ -402,18 +400,14 @@ fn spawn_background_worker(
 
                             // Fetch les données avec l'intervalle par défaut
                             let result = runtime.block_on(async {
-                                fetch_ticker_data(&symbol, Interval::default()).await
+                                fetch_ticker_data(&client, &symbol, Interval::default()).await
                             });
 
                             match result {
-                                Ok((data, long_name)) => {
-                                    info!(ticker = %symbol, candles = data.len(), long_name = ?long_name, "Ticker added successfully");
-                                    // Utilise le long_name de Yahoo, sinon fallback sur le symbol
-                                    let name = long_name.unwrap_or_else(|| symbol.clone());
+                                Ok(fetched) => {
                                     let _ = result_tx.send(AppResult::TickerAdded {
                                         symbol: symbol.clone(),
-                                        name,
-                                        data,
+                                        fetched,
                                     });
                                 }
                                 Err(e) => {
@@ -494,11 +488,10 @@ fn run(
         match result_rx.try_recv() {
             Ok(result) => {
                 match result {
-                    AppResult::TickerDataLoaded { index, data } => {
+                    AppResult::TickerDataLoaded { index, fetched } => {
                         let mut app_lock = app.lock().unwrap();
                         if let Some(item) = app_lock.watchlist.get_mut(index) {
-                            info!(ticker = %item.symbol, interval = %data.interval.label(), candles = data.len(), "Updating watchlist item with new data");
-                            item.data = Some(data);
+                            item.apply(fetched);
                         }
                     }
                     AppResult::LoadError {
@@ -509,11 +502,10 @@ fn run(
                         error!(ticker = %symbol, error = %error, "Failed to load ticker data");
                         // Optionally: show error to user via app state
                     }
-                    AppResult::TickerAdded { symbol, name, data } => {
+                    AppResult::TickerAdded { symbol, fetched } => {
                         let mut app_lock = app.lock().unwrap();
-                        info!(ticker = %symbol, candles = data.len(), "Adding ticker to watchlist");
-                        // Crée un nouveau WatchlistItem avec les données
-                        let item = WatchlistItem::with_data(symbol, name, data);
+                        let mut item = WatchlistItem::new(symbol);
+                        item.apply(fetched);
                         app_lock.watchlist.push(item);
                     }
                     AppResult::AddError { symbol, error } => {

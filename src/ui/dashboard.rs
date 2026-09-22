@@ -231,7 +231,7 @@ fn render_main_content(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(index, item)| {
             // Détermine le style selon la variation
-            let style = if item.has_data() {
+            let style = if item.quote.is_some() {
                 if item.is_positive() {
                     Style::default().fg(Color::Green)
                 } else {
@@ -242,7 +242,7 @@ fn render_main_content(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             // Formate la ligne pour cet item
-            let line = if item.has_data() {
+            let line = if item.quote.is_some() {
                 // Données chargées : affiche prix et variation
                 let price_str = item
                     .current_price()

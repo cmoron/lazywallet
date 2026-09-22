@@ -4,12 +4,38 @@
 // Représente un item dans la watchlist avec ses données chargées
 //
 // CONCEPTS RUST :
-// 1. Composition : WatchlistItem contient OHLCData
-// 2. Methods : calculer le prix actuel et la variation
-// 3. Option : gérer les données manquantes
+// 1. Composition : WatchlistItem contient OHLCData et une Quote
+// 2. Option : gérer les données manquantes (pas encore chargées)
+// 3. Types Copy : Quote est petite, on la copie au lieu de l'emprunter
 // ============================================================================
 
-use crate::models::{OHLCData, OHLC};
+use crate::models::OHLCData;
+
+/// Prix courant et clôture de référence pour la variation du jour
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Quote {
+    pub price: f64,
+    pub previous_close: Option<f64>,
+}
+
+impl Quote {
+    /// Variation depuis la clôture de la séance précédente, en %
+    pub fn change_percent(&self) -> Option<f64> {
+        let previous = self.previous_close.filter(|p| *p != 0.0)?;
+        Some((self.price - previous) / previous * 100.0)
+    }
+}
+
+/// Tout ce qu'un chargement Yahoo rapporte pour un ticker
+#[derive(Debug, Clone)]
+pub struct FetchedTicker {
+    pub data: OHLCData,
+    pub long_name: Option<String>,
+    pub quote: Quote,
+    pub currency: Option<String>,
+    /// Décimales conseillées par Yahoo (`priceHint` : 2 pour une action, 4 pour du forex)
+    pub price_decimals: usize,
+}
 
 /// Un ticker dans la watchlist avec ses données
 #[derive(Debug, Clone)]
@@ -17,155 +43,117 @@ pub struct WatchlistItem {
     /// Symbole du ticker (ex: "AAPL")
     pub symbol: String,
 
-    /// Nom complet (ex: "Apple Inc.")
+    /// Nom complet (ex: "Apple Inc."), le symbole tant que rien n'est chargé
     pub name: String,
 
-    /// Données OHLC chargées (None si pas encore chargées ou erreur)
-    /// CONCEPT RUST : Option pour les données optionnelles
-    /// - Some(data) : données disponibles
-    /// - None : pas encore chargées ou erreur de chargement
+    /// Chandelles du dernier intervalle chargé (None si pas encore chargées)
     pub data: Option<OHLCData>,
+
+    /// Prix et clôture de la veille, indépendants de l'intervalle du graphique
+    pub quote: Option<Quote>,
+
+    /// Devise de cotation (ex: "USD")
+    pub currency: Option<String>,
+
+    /// Nombre de décimales pour afficher le prix
+    pub price_decimals: usize,
 }
 
 impl WatchlistItem {
-    /// Crée un nouvel item de watchlist sans données
-    pub fn new(symbol: String, name: String) -> Self {
+    /// Nouvel item sans données : le nom affiché est le symbole jusqu'au premier chargement
+    pub fn new(symbol: String) -> Self {
         Self {
+            name: symbol.clone(),
             symbol,
-            name,
             data: None,
+            quote: None,
+            currency: None,
+            price_decimals: 2,
         }
     }
 
-    /// Crée un item avec des données déjà chargées
-    pub fn with_data(symbol: String, name: String, data: OHLCData) -> Self {
-        Self {
-            symbol,
-            name,
-            data: Some(data),
-        }
-    }
-
-    /// Retourne le prix actuel (close de la dernière chandelle)
+    /// Intègre un chargement
     ///
-    /// CONCEPT RUST : Option chaining avec ?
-    /// - self.data? : early return si None
-    /// - .last()? : early return si la liste est vide
-    /// - Some(ohlc.close) : retourne le prix
+    /// CONCEPT : La clôture de référence survit à un chargement qui ne sait pas la calculer
+    /// (W1), sinon la variation du jour disparaîtrait en passant le graphique en hebdo.
+    pub fn apply(&mut self, fetched: FetchedTicker) {
+        if let Some(name) = fetched.long_name {
+            self.name = name;
+        }
+        let previous_close = fetched
+            .quote
+            .previous_close
+            .or(self.quote.and_then(|q| q.previous_close));
+        self.quote = Some(Quote {
+            price: fetched.quote.price,
+            previous_close,
+        });
+        self.currency = fetched.currency;
+        self.price_decimals = fetched.price_decimals;
+        self.data = Some(fetched.data);
+    }
+
+    /// Prix courant (None tant que rien n'est chargé)
     pub fn current_price(&self) -> Option<f64> {
-        let data = self.data.as_ref()?; // &Option<T> -> Option<&T>
-        let last = data.last()?;
-        Some(last.close)
+        self.quote.map(|q| q.price)
     }
 
-    /// Retourne la variation journalière en pourcentage
-    ///
-    /// CONCEPT RUST : Method chaining
-    /// - self.data.as_ref() : &Option<OHLCData> -> Option<&OHLCData>
-    /// - .and_then() : transforme Option<A> en Option<B>
-    /// - Équivalent à un if let Some(data) = ... imbriqué
-    ///
-    /// CONCEPT : Daily change instead of total change
-    /// - Affiche l'évolution du jour (ou dernière journée disponible)
-    /// - Plus pertinent pour la watchlist que la variation totale
+    /// Variation du jour en %
     pub fn change_percent(&self) -> Option<f64> {
-        self.data
-            .as_ref()
-            .and_then(|data| data.daily_change_percent())
+        self.quote?.change_percent()
     }
 
-    /// Retourne la dernière chandelle OHLC
-    pub fn last_ohlc(&self) -> Option<&OHLC> {
-        self.data.as_ref()?.last()
-    }
-
-    /// Vérifie si les données sont chargées
-    pub fn has_data(&self) -> bool {
-        self.data.is_some()
-    }
-
-    /// Formatte l'item pour l'affichage dans la liste
-    ///
-    /// Format : "AAPL    Apple Inc.         $271.49  ▲ +2.11%"
-    ///
-    /// CONCEPT RUST : String building
-    /// - format! pour créer des strings formatées
-    /// - match pour gérer les Option
-    ///
-    /// Note : Le nom est tronqué à 20 caractères pour éviter le débordement
-    pub fn display(&self) -> String {
-        // Prix
-        let price_str = match self.current_price() {
-            Some(price) => format!("${:.2}", price),
-            None => "Loading...".to_string(),
-        };
-
-        // Variation avec flèche
-        let change_str = match self.change_percent() {
-            Some(change) => {
-                let arrow = if change >= 0.0 { "▲" } else { "▼" };
-                format!("{} {:+.2}%", arrow, change)
-            }
-            None => String::new(),
-        };
-
-        // Tronque le nom à 20 caractères avec ellipse si nécessaire
-        let truncated_name = if self.name.chars().count() <= 20 {
-            self.name.clone()
-        } else {
-            let truncated: String = self.name.chars().take(19).collect();
-            format!("{}…", truncated)
-        };
-
-        format!(
-            "{:<8} {:<20} {:>12}  {}",
-            self.symbol, truncated_name, price_str, change_str
-        )
-    }
-
-    /// Retourne true si le ticker est en hausse
+    /// Retourne true si le ticker est en hausse sur la journée
     pub fn is_positive(&self) -> bool {
-        self.change_percent().map(|c| c >= 0.0).unwrap_or(false)
+        self.change_percent().is_some_and(|c| c >= 0.0)
+    }
+
+    /// Prix avec la précision et la devise de la place ("339.75 USD", "1.1453 USD")
+    pub fn format_price(&self, price: f64) -> String {
+        match &self.currency {
+            Some(currency) => format!("{price:.prec$} {currency}", prec = self.price_decimals),
+            None => format!("{price:.prec$}", prec = self.price_decimals),
+        }
     }
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::Interval;
-    use crate::models::Timeframe;
-    use chrono::Utc;
+    use chrono::FixedOffset;
 
     #[test]
-    fn test_watchlist_item_new() {
-        let item = WatchlistItem::new("AAPL".to_string(), "Apple Inc.".to_string());
-        assert_eq!(item.symbol, "AAPL");
-        assert!(!item.has_data());
-        assert!(item.current_price().is_none());
+    fn quote_change_percent() {
+        let quote = |previous_close| Quote {
+            price: 110.0,
+            previous_close,
+        };
+        assert_eq!(quote(Some(100.0)).change_percent(), Some(10.0));
+        assert_eq!(quote(None).change_percent(), None);
+        assert_eq!(quote(Some(0.0)).change_percent(), None);
     }
 
     #[test]
-    fn test_watchlist_item_with_data() {
-        let mut data = OHLCData::new("AAPL".to_string(), Interval::D1, Timeframe::OneWeek);
-        data.add_candle(OHLC::new(Utc::now(), 100.0, 110.0, 95.0, 105.0, 1000));
-
-        let item = WatchlistItem::with_data("AAPL".to_string(), "Apple Inc.".to_string(), data);
-
-        assert!(item.has_data());
-        assert_eq!(item.current_price(), Some(105.0));
-    }
-
-    #[test]
-    fn test_is_positive() {
-        let mut data = OHLCData::new("AAPL".to_string(), Interval::D1, Timeframe::OneWeek);
-        data.add_candle(OHLC::new(Utc::now(), 100.0, 110.0, 95.0, 105.0, 1000));
-
-        let item = WatchlistItem::with_data("AAPL".to_string(), "Apple Inc.".to_string(), data);
-
+    fn apply_keeps_previous_close_when_new_one_is_unknown() {
+        let utc = FixedOffset::east_opt(0).unwrap();
+        let mut item = WatchlistItem::new("AAPL".into());
+        assert_eq!(item.name, "AAPL");
+        let fetched = |interval, previous_close| FetchedTicker {
+            data: OHLCData::new("AAPL".into(), interval, utc),
+            long_name: Some("Apple Inc.".into()),
+            quote: Quote {
+                price: 110.0,
+                previous_close,
+            },
+            currency: Some("USD".into()),
+            price_decimals: 2,
+        };
+        item.apply(fetched(Interval::M30, Some(100.0)));
+        item.apply(fetched(Interval::W1, None)); // passage en hebdo dans le graphique
+        assert_eq!(item.change_percent(), Some(10.0));
         assert!(item.is_positive());
+        assert_eq!(item.name, "Apple Inc.");
+        assert_eq!(item.format_price(1.14532), "1.15 USD");
     }
 }

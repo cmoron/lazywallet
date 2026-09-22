@@ -425,8 +425,8 @@ mod tests {
     #[test]
     fn test_app_with_watchlist() {
         let items = vec![
-            WatchlistItem::new("AAPL".to_string(), "Apple Inc.".to_string()),
-            WatchlistItem::new("TSLA".to_string(), "Tesla".to_string()),
+            WatchlistItem::new("AAPL".to_string()),
+            WatchlistItem::new("TSLA".to_string()),
         ];
 
         let app = App::with_watchlist(items);
@@ -446,9 +446,9 @@ mod tests {
     #[test]
     fn test_navigation() {
         let items = vec![
-            WatchlistItem::new("AAPL".to_string(), "Apple Inc.".to_string()),
-            WatchlistItem::new("TSLA".to_string(), "Tesla".to_string()),
-            WatchlistItem::new("BTC-USD".to_string(), "Bitcoin".to_string()),
+            WatchlistItem::new("AAPL".to_string()),
+            WatchlistItem::new("TSLA".to_string()),
+            WatchlistItem::new("BTC-USD".to_string()),
         ];
 
         let mut app = App::with_watchlist(items);
@@ -482,8 +482,8 @@ mod tests {
     #[test]
     fn test_selected_item() {
         let items = vec![
-            WatchlistItem::new("AAPL".to_string(), "Apple Inc.".to_string()),
-            WatchlistItem::new("TSLA".to_string(), "Tesla".to_string()),
+            WatchlistItem::new("AAPL".to_string()),
+            WatchlistItem::new("TSLA".to_string()),
         ];
 
         let app = App::with_watchlist(items);

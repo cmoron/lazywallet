@@ -800,8 +800,12 @@ pub fn render_candlestick_chart(frame: &mut Frame, app: &App, area: Rect) {
     render_header(frame, app, item, chunks[0]);
 
     // Crée le renderer et génère les lignes
-    let renderer =
-        CandlestickRenderer::new(&data.candles, data.interval, data.ticker_type, chunks[1]);
+    let renderer = CandlestickRenderer::new(
+        &data.candles,
+        data.interval,
+        crate::models::TickerType::from_symbol(&data.symbol),
+        chunks[1],
+    );
     let lines = renderer.render_lines();
 
     // Crée le widget Paragraph avec les lignes
@@ -825,7 +829,7 @@ pub fn render_candlestick_chart(frame: &mut Frame, app: &App, area: Rect) {
                 " 🕯️ {} - {}({}, {} chandeliers) [h/l: changer interval] ",
                 item.symbol,
                 interval_display,
-                data.timeframe.label(),
+                data.interval.label(),
                 data.candles.len()
             )),
     );
