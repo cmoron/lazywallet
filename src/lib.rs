@@ -8,3 +8,4 @@ pub mod api; // API Yahoo Finance
 pub mod app; // État de l'application
 pub mod models; // Structures de données
 pub mod ui; // Interface utilisateur
+pub mod worker; // Thread réseau (commandes → résultats)

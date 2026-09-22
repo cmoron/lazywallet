@@ -850,7 +850,7 @@ fn render_header(frame: &mut Frame, app: &App, item: &crate::models::WatchlistIt
 
     // CONCEPT : Confirmation de quit two-step et loading indicator
     // - Si app.is_awaiting_quit_confirmation(), affiche message d'avertissement
-    // - Si app.is_loading_data(), affiche indicateur de chargement
+    // - Si app.is_loading(), affiche indicateur de chargement
     // - Sinon, affiche les infos normales avec shortcuts
     let text = if app.is_awaiting_quit_confirmation() {
         // Message de confirmation de quit
@@ -875,12 +875,9 @@ fn render_header(frame: &mut Frame, app: &App, item: &crate::models::WatchlistIt
                     .add_modifier(Modifier::BOLD),
             ),
         ])]
-    } else if app.is_loading_data() {
+    } else if app.is_loading() {
         // Indicateur de chargement
-        let message = app
-            .loading_message
-            .clone()
-            .unwrap_or_else(|| "Chargement en cours...".to_string());
+        let message = format!("Chargement en cours ({})...", app.pending);
         vec![Line::from(vec![
             Span::styled(
                 "⏳ ",

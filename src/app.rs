@@ -6,22 +6,30 @@
 // CONCEPTS RUST :
 // 1. State Management : centraliser l'état dans une seule structure
 // 2. Mutabilité contrôlée : &mut self pour modifier l'état
-// 3. Encapsulation : les champs sont privés, accès via méthodes publiques
+// 3. Propriétaire unique : seul le thread principal possède App
 //
-// PATTERN : Cette structure suit le pattern "Application State"
-// - Tous les composants de l'UI lisent depuis App
-// - Toutes les modifications passent par les méthodes de App
-// - Garantit la cohérence de l'état
+// PATTERN : Les transitions qui demandent du réseau ne l'appellent pas :
+// elles *retournent* des `AppCommand`, que main() envoie au worker.
+// L'état reste ainsi testable sans réseau ni thread.
 // ============================================================================
 
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
 use crate::models::{Interval, WatchlistItem};
+use crate::worker::{AppCommand, AppResult};
+
+/// Intervalle entre deux rafraîchissements automatiques des prix
+pub const REFRESH_EVERY: Duration = Duration::from_secs(60);
+
+/// Durée d'affichage d'un message dans la barre d'état
+pub const STATUS_TTL: Duration = Duration::from_secs(5);
 
 // ============================================================================
 // Enum : Screen
 // ============================================================================
 // CONCEPT RUST : Enums pour state machines
 // - Représente les différents écrans de l'application
-// - Pattern "State Machine" : un seul écran actif à la fois
 // - Le compilateur force à gérer tous les cas (exhaustivité)
 // ============================================================================
 
@@ -30,23 +38,23 @@ use crate::models::{Interval, WatchlistItem};
 pub enum Screen {
     /// Vue principale : liste des tickers (watchlist)
     Dashboard,
-
     /// Vue graphique : graphique du ticker sélectionné
     ChartView,
-
-    /// Mode saisie : permet de capturer du texte utilisateur
-    /// CONCEPT : Modal input mode (Vim-like)
-    /// - Capture les touches pour construire un buffer
-    /// - Enter valide, ESC annule
+    /// Mode saisie : les touches construisent un symbole (Enter valide, ESC annule)
     InputMode,
 }
 
+/// Message affiché dans la barre d'état
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub text: String,
+    pub is_error: bool,
+    /// Instant d'affichage : le message disparaît après `STATUS_TTL`
+    pub since: Instant,
+}
+
 /// État principal de l'application
-///
-/// CONCEPT RUST : Struct avec champs privés
-/// - Par défaut, tous les champs sont privés au module
-/// - L'extérieur ne peut que lire/modifier via les méthodes publiques
-/// - Encapsulation et contrôle total sur l'état
+#[allow(clippy::struct_excessive_bools)] // 3 drapeaux indépendants, pas une machine à états
 pub struct App {
     /// Indique si l'application doit continuer à tourner
     pub running: bool,
@@ -58,147 +66,160 @@ pub struct App {
     pub selected_index: usize,
 
     /// Écran actuellement affiché
-    /// CONCEPT RUST : Enum pour state management
-    /// - Screen::Dashboard : vue watchlist
-    /// - Screen::ChartView : vue graphique
-    /// - Un seul écran actif à la fois (state machine)
     pub current_screen: Screen,
 
-    /// Intervalle actuel pour les graphiques (1m, 5m, 30m, 1h, 1d, etc.)
-    /// Peut être modifié avec les touches [ et ]
+    /// Intervalle choisi pour les graphiques, commun à tous les tickers
     pub current_interval: Interval,
 
-    /// Indique si l'utilisateur a demandé à quitter (attend confirmation)
-    /// CONCEPT : Two-step quit pour éviter les sorties accidentelles
-    /// - Première pression de 'q' : confirm_quit = true
-    /// - Deuxième pression de 'q' : running = false (quit réel)
-    /// - N'importe quelle autre touche : confirm_quit = false (annulation)
+    /// Premier appui sur 'q' reçu : un second quitte
     pub confirm_quit: bool,
 
-    /// Indique si des données sont en cours de chargement
-    /// CONCEPT : Background loading state
-    /// - true : affiche un indicateur de chargement
-    /// - false : affichage normal
-    pub is_loading: bool,
+    /// Premier appui sur 'd' reçu : un second supprime
+    pub confirm_delete: bool,
 
-    /// Message de chargement optionnel
-    /// CONCEPT : Status message pour l'utilisateur
-    /// - Some(msg) : affiche le message pendant le chargement
-    /// - None : pas de message spécifique
-    pub loading_message: Option<String>,
+    /// Commandes envoyées au worker dont le résultat n'est pas encore arrivé
+    ///
+    /// CONCEPT : Un compteur plutôt qu'un booléen — plusieurs chargements
+    /// peuvent être en vol, le premier terminé ne doit pas masquer les autres.
+    pub pending: usize,
+
+    /// Message (info ou erreur) affiché dans la barre d'état
+    pub status: Option<Status>,
 
     /// Buffer de saisie pour le mode Input
-    /// CONCEPT : Input buffer (Vim-like)
-    /// - Contient le texte en cours de saisie
-    /// - Vidé après validation ou annulation
     pub input_buffer: String,
 
     /// Prompt affiché en mode Input
-    /// CONCEPT : User prompt
-    /// - Ex: "Add ticker: ", "Search: ", etc.
     pub input_prompt: String,
 
-    /// Indique si l'utilisateur a demandé à supprimer un item (attend confirmation)
-    /// CONCEPT : Two-step delete pour éviter les suppressions accidentelles
-    /// - Première pression de 'd' : confirm_delete = true
-    /// - Deuxième pression de 'd' : suppression réelle
-    /// - N'importe quelle autre touche : confirm_delete = false (annulation)
-    pub confirm_delete: bool,
+    /// Fichier de la watchlist (None dans les tests : rien n'est écrit)
+    pub watchlist_path: Option<PathBuf>,
+
+    /// Dernier rafraîchissement (automatique ou manuel)
+    last_refresh: Instant,
 }
 
 impl App {
-    /// Crée une nouvelle instance de App avec une watchlist vide
-    ///
-    /// CONCEPT RUST : Constructor pattern
-    /// - Convention : fonction associée nommée "new()"
-    /// - Retourne Self (alias pour le type App)
-    /// - Initialise tous les champs avec des valeurs par défaut
-    pub fn new() -> Self {
+    /// Crée l'application avec des tickers pas encore chargés
+    pub fn new(symbols: Vec<String>, watchlist_path: Option<PathBuf>, now: Instant) -> Self {
         Self {
             running: true,
-            watchlist: Vec::new(),
-            selected_index: 0,
-            current_screen: Screen::Dashboard, // Commence sur le dashboard
-            current_interval: Interval::default(), // 30m par défaut
-            confirm_quit: false,
-            is_loading: false,
-            loading_message: None,
-            input_buffer: String::new(),
-            input_prompt: String::new(),
-            confirm_delete: false,
-        }
-    }
-
-    /// Crée une App avec une watchlist préchargée
-    pub fn with_watchlist(watchlist: Vec<WatchlistItem>) -> Self {
-        Self {
-            running: true,
-            watchlist,
+            watchlist: symbols.into_iter().map(WatchlistItem::new).collect(),
             selected_index: 0,
             current_screen: Screen::Dashboard,
-            current_interval: Interval::default(), // 30m par défaut
+            current_interval: Interval::default(),
             confirm_quit: false,
-            is_loading: false,
-            loading_message: None,
+            confirm_delete: false,
+            pending: 0,
+            status: None,
             input_buffer: String::new(),
             input_prompt: String::new(),
-            confirm_delete: false,
+            watchlist_path,
+            last_refresh: now,
         }
     }
 
+    // ========================================================================
+    // Chargements (réseau via le worker)
+    // ========================================================================
+
+    /// Premier chargement de chaque ticker, dans l'intervalle par défaut
+    pub fn initial_commands(&self) -> Vec<AppCommand> {
+        self.watchlist
+            .iter()
+            .map(|item| AppCommand::Load {
+                symbol: item.symbol.clone(),
+                interval: Interval::default(),
+            })
+            .collect()
+    }
+
+    /// Recharge chaque ticker dans l'intervalle déjà chargé pour lui
+    pub fn refresh_commands(&mut self, now: Instant) -> Vec<AppCommand> {
+        self.last_refresh = now;
+        self.watchlist
+            .iter()
+            .map(|item| AppCommand::Load {
+                symbol: item.symbol.clone(),
+                interval: item
+                    .data
+                    .as_ref()
+                    .map_or(Interval::default(), |d| d.interval),
+            })
+            .collect()
+    }
+
+    /// Appelé à chaque tour de boucle : expiration du statut, refresh automatique
+    pub fn tick(&mut self, now: Instant) -> Vec<AppCommand> {
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|s| now.duration_since(s.since) >= STATUS_TTL)
+        {
+            self.status = None;
+        }
+        // Pas de refresh pendant un chargement : évite d'empiler les requêtes
+        if self.pending == 0 && now.duration_since(self.last_refresh) >= REFRESH_EVERY {
+            return self.refresh_commands(now);
+        }
+        Vec::new()
+    }
+
+    /// Intègre un résultat du worker
+    pub fn apply_result(&mut self, result: AppResult, now: Instant) {
+        self.pending = self.pending.saturating_sub(1);
+        match result {
+            // Ticker supprimé entre-temps : on jette le résultat
+            AppResult::Loaded { symbol, fetched } => {
+                if let Some(item) = self.watchlist.iter_mut().find(|i| i.symbol == symbol) {
+                    item.apply(fetched);
+                }
+            }
+            AppResult::Added { symbol, fetched } => {
+                if self.watchlist.iter().all(|i| i.symbol != symbol) {
+                    let mut item = WatchlistItem::new(symbol.clone());
+                    item.apply(fetched);
+                    self.watchlist.push(item);
+                    self.set_status(format!("{symbol} ajouté"), now);
+                    self.save_watchlist(now);
+                }
+            }
+            AppResult::Failed { error } => self.set_error(error, now),
+        }
+    }
+
+    /// Vérifie si des données sont en cours de chargement
+    pub fn is_loading(&self) -> bool {
+        self.pending > 0
+    }
+
+    // ========================================================================
+    // Barre d'état
+    // ========================================================================
+
+    pub fn set_status(&mut self, text: String, now: Instant) {
+        self.status = Some(Status {
+            text,
+            is_error: false,
+            since: now,
+        });
+    }
+
+    pub fn set_error(&mut self, text: String, now: Instant) {
+        self.status = Some(Status {
+            text,
+            is_error: true,
+            since: now,
+        });
+    }
+
+    // ========================================================================
+    // Navigation et écrans
+    // ========================================================================
+
     /// Quitte l'application
-    ///
-    /// CONCEPT RUST : &mut self
-    /// - self est une référence mutable (on peut modifier l'objet)
-    /// - L'appelant doit avoir une référence mutable de App
-    /// - Borrow checker s'assure qu'il n'y a qu'une seule ref mutable
     pub fn quit(&mut self) {
         self.running = false;
-    }
-
-    /// Navigue vers le haut dans la watchlist
-    ///
-    /// CONCEPT RUST : Saturating arithmetic
-    /// - saturating_sub() : soustrait mais ne descend pas en dessous de 0
-    /// - Évite les panics avec les unsigned
-    pub fn navigate_up(&mut self) {
-        self.selected_index = self.selected_index.saturating_sub(1);
-    }
-
-    /// Navigue vers le bas dans la watchlist
-    ///
-    /// CONCEPT RUST : min() pour éviter le dépassement
-    /// - Limite l'index à watchlist.len() - 1
-    /// - saturating_sub(1) gère le cas watchlist vide (0 - 1 = 0)
-    pub fn navigate_down(&mut self) {
-        let max_index = self.watchlist.len().saturating_sub(1);
-        self.selected_index = (self.selected_index + 1).min(max_index);
-    }
-
-    /// Retourne l'item sélectionné dans la watchlist
-    ///
-    /// CONCEPT RUST : Option<&T>
-    /// - Retourne une référence à l'item (pas de copie)
-    /// - None si la watchlist est vide
-    pub fn selected_item(&self) -> Option<&WatchlistItem> {
-        self.watchlist.get(self.selected_index)
-    }
-
-    /// Tick : appelé à chaque itération de la boucle
-    ///
-    /// CONCEPT : Event Loop Pattern
-    /// - tick() est appelé régulièrement (chaque frame)
-    /// - Permet de mettre à jour l'état même sans événement utilisateur
-    /// - Utile pour animations, compteurs, rafraîchissements auto
-    ///
-    /// Pour l'instant c'est vide, mais on ajoutera du code plus tard
-    /// (ex: décrémenter un compteur de rafraîchissement)
-    pub fn tick(&mut self) {
-        // Pour l'instant, rien à faire à chaque tick
-        // Dans les prochaines étapes :
-        // - Décrémenter un timer de rafraîchissement
-        // - Mettre à jour des animations
-        // - etc.
     }
 
     /// Vérifie si l'application doit continuer
@@ -206,13 +227,34 @@ impl App {
         self.running
     }
 
-    /// Affiche la vue graphique (ChartView)
+    /// Navigue vers le haut dans la watchlist
     ///
-    /// CONCEPT RUST : State transition
-    /// - Change l'état de current_screen
-    /// - Pattern "State Machine" : transition Dashboard → ChartView
-    pub fn show_chart(&mut self) {
+    /// CONCEPT RUST : saturating_sub() ne descend pas en dessous de 0 (pas de panic)
+    pub fn navigate_up(&mut self) {
+        self.selected_index = self.selected_index.saturating_sub(1);
+    }
+
+    /// Navigue vers le bas dans la watchlist
+    pub fn navigate_down(&mut self) {
+        let max_index = self.watchlist.len().saturating_sub(1);
+        self.selected_index = (self.selected_index + 1).min(max_index);
+    }
+
+    /// Retourne l'item sélectionné dans la watchlist
+    pub fn selected_item(&self) -> Option<&WatchlistItem> {
+        self.watchlist.get(self.selected_index)
+    }
+
+    /// Ouvre le graphique ; recharge si les données ne sont pas dans l'intervalle choisi
+    pub fn open_chart(&mut self) -> Option<AppCommand> {
+        let item = self.selected_item()?;
+        let loaded = item.data.as_ref().map(|d| d.interval);
+        let command = (loaded != Some(self.current_interval)).then(|| AppCommand::Load {
+            symbol: item.symbol.clone(),
+            interval: self.current_interval,
+        });
         self.current_screen = Screen::ChartView;
+        command
     }
 
     /// Retourne à la vue dashboard
@@ -230,79 +272,86 @@ impl App {
         self.current_screen == Screen::ChartView
     }
 
-    /// Passe à l'intervalle suivant
+    /// Change l'intervalle et recharge le ticker affiché
     ///
-    /// CONCEPT : Cycle d'états
-    /// - M1 → M5 → M15 → M30 → H1 → H4 → D1 → W1 → M1
-    /// - Utilisé avec la touche ]
-    pub fn next_interval(&mut self) {
-        self.current_interval = self.current_interval.next();
+    /// CONCEPT RUST : fn pointer
+    /// - `step` vaut `Interval::next` ou `Interval::previous`
+    pub fn change_interval(&mut self, step: fn(Interval) -> Interval) -> Option<AppCommand> {
+        self.current_interval = step(self.current_interval);
+        let symbol = self.selected_item()?.symbol.clone();
+        Some(AppCommand::Load {
+            symbol,
+            interval: self.current_interval,
+        })
     }
 
-    /// Passe à l'intervalle précédent
-    ///
-    /// CONCEPT : Cycle d'états (inverse)
-    /// - W1 → D1 → H4 → H1 → M30 → M15 → M5 → M1 → W1
-    /// - Utilisé avec la touche [
-    pub fn previous_interval(&mut self) {
-        self.current_interval = self.current_interval.previous();
-    }
+    // ========================================================================
+    // Confirmations (quit / delete en deux appuis)
+    // ========================================================================
 
-    /// Demande la confirmation de quitter
-    ///
-    /// CONCEPT : Two-step quit pattern
-    /// - Appelé lors de la première pression de 'q'
-    /// - Active l'état confirm_quit pour attendre une seconde pression
-    /// - Évite les sorties accidentelles
     pub fn request_quit(&mut self) {
         self.confirm_quit = true;
     }
 
-    /// Annule la demande de quit
-    ///
-    /// CONCEPT : Reset de l'état de confirmation
-    /// - Appelé quand l'utilisateur presse une touche autre que 'q'
-    /// - Remet confirm_quit à false
     pub fn cancel_quit(&mut self) {
         self.confirm_quit = false;
     }
 
-    /// Vérifie si on attend la confirmation de quit
     pub fn is_awaiting_quit_confirmation(&self) -> bool {
         self.confirm_quit
     }
 
-    /// Démarre le chargement avec un message optionnel
-    ///
-    /// CONCEPT : Loading state management
-    /// - Active is_loading pour afficher l'indicateur
-    /// - Stocke le message pour l'utilisateur
-    pub fn start_loading(&mut self, message: Option<String>) {
-        self.is_loading = true;
-        self.loading_message = message;
+    pub fn request_delete(&mut self) {
+        self.confirm_delete = true;
     }
 
-    /// Termine le chargement
-    pub fn stop_loading(&mut self) {
-        self.is_loading = false;
-        self.loading_message = None;
+    pub fn cancel_delete(&mut self) {
+        self.confirm_delete = false;
     }
 
-    /// Vérifie si des données sont en cours de chargement
-    pub fn is_loading_data(&self) -> bool {
-        self.is_loading
+    pub fn is_awaiting_delete_confirmation(&self) -> bool {
+        self.confirm_delete
     }
 
     // ========================================================================
-    // Input Mode Management
+    // Watchlist : ajout, suppression, sauvegarde
+    // ========================================================================
+
+    /// Valide un symbole saisi ; None si vide ou déjà présent (erreur affichée)
+    pub fn request_add(&mut self, symbol: &str, now: Instant) -> Option<AppCommand> {
+        let symbol = symbol.trim().to_uppercase();
+        if symbol.is_empty() {
+            return None;
+        }
+        if self.watchlist.iter().any(|i| i.symbol == symbol) {
+            self.set_error(format!("{symbol} est déjà dans la watchlist"), now);
+            return None;
+        }
+        Some(AppCommand::Add { symbol })
+    }
+
+    /// Supprime l'item sélectionné et garde la sélection dans les bornes
+    pub fn delete_selected(&mut self, now: Instant) {
+        self.confirm_delete = false;
+        if self.selected_index >= self.watchlist.len() {
+            return;
+        }
+        self.watchlist.remove(self.selected_index);
+        self.selected_index = self
+            .selected_index
+            .min(self.watchlist.len().saturating_sub(1));
+        self.save_watchlist(now);
+    }
+
+    fn save_watchlist(&mut self, _now: Instant) {
+        // Écriture du fichier : Task 5
+    }
+
+    // ========================================================================
+    // Input Mode
     // ========================================================================
 
     /// Entre en mode input avec un prompt donné
-    ///
-    /// CONCEPT : Modal input (Vim-like)
-    /// - Change l'écran vers InputMode
-    /// - Initialise le buffer vide
-    /// - Configure le prompt à afficher
     pub fn start_input(&mut self, prompt: String) {
         self.current_screen = Screen::InputMode;
         self.input_buffer.clear();
@@ -317,17 +366,10 @@ impl App {
     }
 
     /// Récupère la valeur saisie et retourne au dashboard
-    ///
-    /// CONCEPT : Consume input
-    /// - Retourne le contenu du buffer
-    /// - Vide le buffer
-    /// - Retourne au dashboard
     pub fn submit_input(&mut self) -> String {
-        let value = self.input_buffer.clone();
         self.current_screen = Screen::Dashboard;
-        self.input_buffer.clear();
         self.input_prompt.clear();
-        value
+        std::mem::take(&mut self.input_buffer)
     }
 
     /// Ajoute un caractère au buffer d'input
@@ -344,66 +386,6 @@ impl App {
     pub fn is_in_input_mode(&self) -> bool {
         self.current_screen == Screen::InputMode
     }
-
-    // ========================================================================
-    // Delete Confirmation Management
-    // ========================================================================
-
-    /// Demande la confirmation de suppression
-    ///
-    /// CONCEPT : Two-step delete pattern
-    /// - Appelé lors de la première pression de 'd'
-    /// - Active l'état confirm_delete pour attendre une seconde pression
-    /// - Évite les suppressions accidentelles
-    pub fn request_delete(&mut self) {
-        self.confirm_delete = true;
-    }
-
-    /// Annule la demande de suppression
-    pub fn cancel_delete(&mut self) {
-        self.confirm_delete = false;
-    }
-
-    /// Vérifie si on attend la confirmation de suppression
-    pub fn is_awaiting_delete_confirmation(&self) -> bool {
-        self.confirm_delete
-    }
-
-    /// Supprime l'item sélectionné de la watchlist
-    ///
-    /// CONCEPT : Safe deletion
-    /// - Supprime l'item à selected_index
-    /// - Ajuste selected_index si nécessaire
-    /// - Reset confirm_delete
-    pub fn delete_selected(&mut self) {
-        if self.selected_index < self.watchlist.len() {
-            self.watchlist.remove(self.selected_index);
-
-            // Ajuste l'index si on a supprimé le dernier élément
-            if self.selected_index >= self.watchlist.len() && self.selected_index > 0 {
-                self.selected_index -= 1;
-            }
-        }
-
-        self.confirm_delete = false;
-    }
-}
-
-// ============================================================================
-// Trait Default
-// ============================================================================
-// CONCEPT RUST : Traits
-// - Un trait est comme une interface en Java ou un protocol en Swift
-// - Default est un trait standard qui fournit une valeur par défaut
-// - Permet d'utiliser App::default() au lieu de App::new()
-//
-// Convention Rust : si new() ne prend pas de paramètres, implémenter Default
-// ============================================================================
-
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 // ============================================================================
@@ -413,82 +395,148 @@ impl Default for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{FetchedTicker, OHLCData, Quote, OHLC};
+    use chrono::{FixedOffset, Utc};
 
-    #[test]
-    fn test_app_creation() {
-        let app = App::new();
-        assert!(app.is_running());
-        assert!(app.watchlist.is_empty());
-        assert_eq!(app.selected_index, 0);
+    fn fetched(symbol: &str, interval: Interval) -> FetchedTicker {
+        let utc = FixedOffset::east_opt(0).unwrap();
+        let mut data = OHLCData::new(symbol.into(), interval, utc);
+        data.add_candle(OHLC::new(Utc::now(), 1.0, 2.0, 0.5, 1.5, 0));
+        FetchedTicker {
+            data,
+            long_name: None,
+            quote: Quote {
+                price: 1.5,
+                previous_close: Some(1.0),
+            },
+            currency: None,
+            price_decimals: 2,
+        }
+    }
+
+    fn app(symbols: &[&str]) -> (App, Instant) {
+        let now = Instant::now();
+        let symbols = symbols.iter().map(ToString::to_string).collect();
+        (App::new(symbols, None, now), now)
     }
 
     #[test]
-    fn test_app_with_watchlist() {
-        let items = vec![
-            WatchlistItem::new("AAPL".to_string()),
-            WatchlistItem::new("TSLA".to_string()),
-        ];
-
-        let app = App::with_watchlist(items);
-        assert_eq!(app.watchlist.len(), 2);
-        assert_eq!(app.selected_index, 0);
+    fn late_result_for_deleted_ticker_is_ignored() {
+        let (mut app, now) = app(&["AAPL", "TSLA"]);
+        app.pending = 1;
+        app.delete_selected(now); // supprime AAPL pendant que son chargement est en vol
+        app.apply_result(
+            AppResult::Loaded {
+                symbol: "AAPL".into(),
+                fetched: fetched("AAPL", Interval::M30),
+            },
+            now,
+        );
+        assert_eq!(app.watchlist.len(), 1);
+        assert!(
+            app.watchlist[0].data.is_none(),
+            "TSLA ne doit pas recevoir les données d'AAPL"
+        );
+        assert_eq!(app.pending, 0);
     }
 
     #[test]
-    fn test_app_quit() {
-        let mut app = App::new();
-        assert!(app.is_running());
-
-        app.quit();
-        assert!(!app.is_running());
+    fn failure_reaches_status_line() {
+        let (mut app, now) = app(&["AAPL"]);
+        app.pending = 1;
+        app.apply_result(
+            AppResult::Failed {
+                error: "NOPE : symbole inconnu".into(),
+            },
+            now,
+        );
+        let status = app.status.as_ref().unwrap();
+        assert!(status.is_error && status.text.contains("NOPE"));
+        assert!(!app.is_loading());
     }
 
     #[test]
-    fn test_navigation() {
-        let items = vec![
-            WatchlistItem::new("AAPL".to_string()),
-            WatchlistItem::new("TSLA".to_string()),
-            WatchlistItem::new("BTC-USD".to_string()),
-        ];
+    fn added_ticker_is_appended_once() {
+        let (mut app, now) = app(&["AAPL"]);
+        for _ in 0..2 {
+            app.apply_result(
+                AppResult::Added {
+                    symbol: "TSLA".into(),
+                    fetched: fetched("TSLA", Interval::M30),
+                },
+                now,
+            );
+        }
+        let symbols: Vec<_> = app.watchlist.iter().map(|i| i.symbol.as_str()).collect();
+        assert_eq!(symbols, ["AAPL", "TSLA"]);
+    }
 
-        let mut app = App::with_watchlist(items);
+    #[test]
+    fn request_add_rejects_duplicates_and_blank() {
+        let (mut app, now) = app(&["AAPL"]);
+        assert!(app.request_add("  ", now).is_none());
+        assert!(app.request_add("aapl", now).is_none());
+        assert!(app.status.as_ref().unwrap().is_error);
+        assert!(matches!(
+            app.request_add("qqq", now),
+            Some(AppCommand::Add { symbol }) if symbol == "QQQ"
+        ));
+    }
 
-        // Au début, on est à l'index 0
-        assert_eq!(app.selected_index, 0);
+    #[test]
+    fn opening_chart_reloads_when_interval_differs() {
+        let (mut app, now) = app(&["AAPL"]);
+        app.apply_result(
+            AppResult::Loaded {
+                symbol: "AAPL".into(),
+                fetched: fetched("AAPL", Interval::M30),
+            },
+            now,
+        );
+        assert!(app.open_chart().is_none(), "données déjà en 30m");
+        app.current_interval = Interval::D1;
+        assert!(matches!(
+            app.open_chart(),
+            Some(AppCommand::Load {
+                interval: Interval::D1,
+                ..
+            })
+        ));
+    }
 
-        // Navigate down
+    #[test]
+    fn tick_refreshes_every_minute_when_idle() {
+        let (mut app, now) = app(&["AAPL", "TSLA"]);
+        assert!(app.tick(now + Duration::from_secs(59)).is_empty());
+        assert_eq!(app.tick(now + REFRESH_EVERY).len(), 2);
+        assert!(
+            app.tick(now + REFRESH_EVERY + Duration::from_secs(1))
+                .is_empty(),
+            "compteur remis à zéro"
+        );
+        app.pending = 1;
+        assert!(
+            app.tick(now + REFRESH_EVERY * 3).is_empty(),
+            "pas d'empilement pendant un chargement"
+        );
+    }
+
+    #[test]
+    fn status_expires() {
+        let (mut app, now) = app(&["AAPL"]);
+        app.set_status("ok".into(), now);
+        app.tick(now + STATUS_TTL);
+        assert!(app.status.is_none());
+    }
+
+    #[test]
+    fn delete_keeps_selection_in_range() {
+        let (mut app, now) = app(&["AAPL", "TSLA"]);
         app.navigate_down();
-        assert_eq!(app.selected_index, 1);
-
-        app.navigate_down();
-        assert_eq!(app.selected_index, 2);
-
-        // Navigate down au max : reste à 2
-        app.navigate_down();
-        assert_eq!(app.selected_index, 2);
-
-        // Navigate up
-        app.navigate_up();
-        assert_eq!(app.selected_index, 1);
-
-        app.navigate_up();
+        app.delete_selected(now);
         assert_eq!(app.selected_index, 0);
-
-        // Navigate up au min : reste à 0
-        app.navigate_up();
-        assert_eq!(app.selected_index, 0);
-    }
-
-    #[test]
-    fn test_selected_item() {
-        let items = vec![
-            WatchlistItem::new("AAPL".to_string()),
-            WatchlistItem::new("TSLA".to_string()),
-        ];
-
-        let app = App::with_watchlist(items);
-
-        let selected = app.selected_item().unwrap();
-        assert_eq!(selected.symbol, "AAPL");
+        app.delete_selected(now);
+        assert!(app.watchlist.is_empty() && app.selected_index == 0);
+        app.delete_selected(now); // liste vide : aucun panic
     }
 }
