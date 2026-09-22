@@ -222,16 +222,7 @@ impl Widget for CandleChart<'_> {
         }
 
         let rows = area.height - AXIS_ROWS;
-        // Passe 1 : la largeur de l'axe dépend des prix visibles, qui dépendent de la largeur
-        // ponytail: deux passes ; si la 2e plage élargit les labels d'un chiffre, le dernier
-        // caractère du label est coupé. Évolution : itérer jusqu'à stabilité.
-        let axis_width = axis_width(
-            candles,
-            area.width - PROVISIONAL_AXIS,
-            rows,
-            self.price_decimals,
-        )
-        .min(area.width / 2);
+        let axis_width = fit_axis_width(candles, area.width, rows, self.price_decimals);
         let plot_width = area.width - axis_width;
         let (first, columns) = visible_columns(plot_width, candles.len());
         let visible = &candles[first..];
@@ -244,6 +235,24 @@ impl Widget for CandleChart<'_> {
             .map(|c| (c, last_price_label(c, &ticks, self.price_decimals)));
         draw_price_axis(buf, area, plot_width, &scale, &ticks, last);
         draw_time_axis(buf, area, rows, plot_width, self.data, visible, &columns);
+    }
+}
+
+/// Largeur de l'axe des prix pour une zone de `width` colonnes
+///
+/// CONCEPT : Point fixe. La largeur de l'axe dépend des prix visibles, qui
+/// dépendent de la largeur restante. On part d'une estimation et on élargit
+/// tant que les labels ne tiennent pas ; la largeur ne fait que croître et
+/// reste bornée par `width / 2`, donc la boucle s'arrête.
+fn fit_axis_width(candles: &[OHLC], width: u16, rows: u16, price_decimals: usize) -> u16 {
+    let max = width / 2;
+    let mut axis = PROVISIONAL_AXIS.min(max);
+    loop {
+        let needed = axis_width(candles, width - axis, rows, price_decimals).min(max);
+        if needed <= axis {
+            return axis;
+        }
+        axis = needed;
     }
 }
 
@@ -501,5 +510,21 @@ mod tests {
         // 60 colonnes : chandelles serrées → corps fins, sinon elles forment un mur
         let narrow = symbols(&draw(&d, 60, 30));
         assert!(narrow.contains('┃') && !narrow.contains('█'), "{narrow}");
+    }
+
+    #[test]
+    fn axis_width_fits_the_labels_it_ends_up_showing() {
+        // Revue : vieux prix énormes, récents petits → 2 passes ne suffisaient pas,
+        // l'axe affichait "100000" pour 1 000 000
+        let d = data(400, |i| if i < 350 { 1_234_567.0 } else { 99.5 });
+        for width in [30u16, 40, 60, 90, 200] {
+            let rows = 20 - AXIS_ROWS;
+            let axis = fit_axis_width(&d.candles, width, rows, 2);
+            let needed = axis_width(&d.candles, width - axis, rows, 2);
+            assert!(
+                needed <= axis,
+                "largeur {width} : axe {axis}, labels {needed}"
+            );
+        }
     }
 }
