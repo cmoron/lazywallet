@@ -455,8 +455,8 @@ In `parse_yahoo_response(body, symbol, interval) -> Result<FetchedTicker>`:
 - `price = meta.regular_market_price.unwrap_or(last.close)`;
 - `quote = Quote { price, previous_close: data.previous_session_close() }`;
 - `price_decimals = meta.price_hint.unwrap_or(2)`.
-- [ ] **Step 8: Update call sites in `main.rs`** so it compiles: the worker builds `let client = http_client()?` before `thread::spawn` and calls `fetch_ticker_data(&client, ...)`; `TickerDataLoaded` sets `item.apply(fetched)`; startup and `TickerAdded` build items with `WatchlistItem::new` + `apply`. Minimal glue, since Task 3 rewrites this file.
-- [ ] **Step 9:** `cargo test` → all green (the network test shows as `ignored`). `cargo build` → OK. Existing UI code that used `item.data.timeframe` now shows the date range (use `interval.label()` only; Task 9 redoes the title).
+- [ ] **Step 8: Update call sites** so everything compiles. Delete `src/ui/chart.rs` (dead code that used `Timeframe`) and its `pub mod chart;`. In `candlestick_text.rs`, pass `TickerType::from_symbol(&data.symbol)` where it read `data.ticker_type`, and build the title with `data.interval.label()` instead of `data.timeframe.label()`. In `main.rs`: the worker builds `let client = http_client()?` before `thread::spawn` and calls `fetch_ticker_data(&client, ...)`; `TickerDataLoaded` sets `item.apply(fetched)`; startup and `TickerAdded` build items with `WatchlistItem::new` + `apply`. Minimal glue, since Task 3 rewrites this file.
+- [ ] **Step 9:** `cargo test` → all green (the network test shows as `ignored`). `cargo build` → OK. `rg -n "Timeframe|daily_change_percent|ticker_type" src` → only `candlestick_text.rs` hits via `TickerType::from_symbol` (removed in Task 9).
 - [ ] **Step 10:** `cargo fmt`, commit `fix(data): per-exchange sessions, shared HTTP client with timeout, readable Yahoo errors`.
 
 ---
@@ -739,7 +739,7 @@ pub fn request_add(&mut self, symbol: &str, now: Instant) -> Option<AppCommand> 
 }
 ```
 
-`delete_selected(now)` removes the item, clamps `selected_index` with `saturating_sub`, then calls `save_watchlist(now)`. `save_watchlist` is a no-op stub here (`let _ = now;` is not allowed: give it a body `if self.watchlist_path.is_none() { return; }` plus a comment saying Task 5 fills it in). `Interval::next/previous` take `self` by value so they fit `fn(Interval) -> Interval`. `App::default()` and `App::with_watchlist` are deleted (unused). `is_loading()` is `self.pending > 0`.
+`delete_selected(now)` removes the item, clamps `selected_index` with `saturating_sub`, then calls `save_watchlist(now)`. In this task `save_watchlist(&mut self, _now: Instant)` has an empty body with the comment `// Écriture du fichier : Task 5`; Task 5 replaces it. `Interval::next/previous` take `self` by value so they fit `fn(Interval) -> Interval`. `App::default()` and `App::with_watchlist` are deleted (unused). `is_loading()` is `self.pending > 0`.
 
 - [ ] **Step 5:** `cargo test --lib app` → PASS.
 - [ ] **Step 6: Rewrite `main.rs` around the loop** (keep `init_logging` and the pedagogical header; delete `load_watchlist_data`, `spawn_background_worker`, the local `AppCommand/AppResult`; `handle_event` stays until Task 4 but takes `&mut App` and returns `Vec<AppCommand>` instead of sending):
@@ -1060,7 +1060,7 @@ pub fn save(path: &Path, symbols: &[&str]) -> Result<()> {
 
 ### Task 6: Price axis (pure)
 
-**Files:** Create `src/ui/chart/price_axis.rs`. Temporarily `mod chart_v2;`? No — `src/ui/chart.rs` (dead) is deleted in this task so `src/ui/chart/` can exist; `ui/mod.rs` declares `pub mod chart;` with `chart/mod.rs` containing only `pub mod price_axis;` for now.
+**Files:** Create `src/ui/chart/mod.rs` (only `pub mod price_axis;` for now) and `src/ui/chart/price_axis.rs`; `ui/mod.rs` declares `pub mod chart;` (the old `ui/chart.rs` was deleted in Task 2).
 
 **Interfaces — Produces:**
 
@@ -1159,7 +1159,7 @@ pub fn price_ticks(min: f64, max: f64, rows: u16) -> PriceTicks {
 ```
 
 - [ ] **Step 4:** `cargo test --lib price_axis` → PASS; `cargo build` → OK.
-- [ ] **Step 5:** `cargo fmt`, commit `feat(chart): round price-axis ticks with adaptive precision` (includes the deletion of the dead `ui/chart.rs`).
+- [ ] **Step 5:** `cargo fmt`, commit `feat(chart): round price-axis ticks with adaptive precision`.
 
 ---
 
@@ -1227,7 +1227,8 @@ fn stock_intraday_uses_exchange_time() {
     let start = ny.with_ymd_and_hms(2026, 9, 14, 9, 30, 0).unwrap();
     let times = series(ny, start, Duration::minutes(30), 130, Some((9, 16)));
     let axis = time_axis(&times, &cols(130, 2), 260);
-    assert!(axis.primary.iter().all(|l| l.text.as_str() >= "09:00" && l.text.as_str() <= "16:00" || l.text.contains('/')));
+    // 260 colonnes, 13 chandelles/jour à 2 colonnes : pas de 3 h → 09:30, 12:00, 15:00
+    assert!(axis.primary.iter().all(|l| ("09:00"..="16:00").contains(&l.text.as_str())));
     assert!(axis.secondary.iter().any(|l| l.text.starts_with("Tue 15/09")));
 }
 
@@ -1349,7 +1350,9 @@ fn place(times: &[DateTime<FixedOffset>], columns: &[u16], indices: &[usize], fo
 }
 
 pub fn time_axis(times: &[DateTime<FixedOffset>], columns: &[u16], width: u16) -> TimeAxis {
-    let Some(first) = times.first() else { return TimeAxis::default() };
+    if times.is_empty() {
+        return TimeAxis::default();
+    }
     // Pas trouvé (trop peu de chandelles) : pas de labels fins, seulement le contexte
     let step = choose_step(times, columns);
     let primary = step.map_or_else(Vec::new, |s| place(times, columns, &boundaries(times, s), s.format(), width));
@@ -1360,12 +1363,11 @@ pub fn time_axis(times: &[DateTime<FixedOffset>], columns: &[u16], width: u16) -
     let mut indices = vec![0];
     indices.extend(boundaries(times, context_step));
     let secondary = place(times, columns, &indices, context_format, width);
-    let _ = first;
     TimeAxis { primary, secondary }
 }
 ```
 
-(Drop the `let Some(first)` binding in favour of `if times.is_empty() { return TimeAxis::default(); }`. It is written this way above only to make the empty case visible.) Years steps have no context: `unwrap_or((Years(1), "%Y"))` keeps a year on the left, which is harmless.
+Years steps have no context: `unwrap_or((Years(1), "%Y"))` keeps a year on the left, which is harmless.
 
 - [ ] **Step 4:** `cargo test --lib time_axis` → PASS. If `stock_intraday_uses_exchange_time` fails on the `Tue 15/09` label position, print both rows and check the labels by eye before loosening the assertion. The label must exist; its exact column does not matter.
 - [ ] **Step 5:** `cargo fmt`, commit `feat(chart): time axis picks the finest non-overlapping step in exchange time`.
@@ -1486,9 +1488,9 @@ fn latest_candle_is_drawn_next_to_the_axis() {
     let d = data(500, |i| 100.0 + (i % 20) as f64);
     let buf = draw(&d, 100, 20);
     let rows = 20 - AXIS_ROWS;
-    let plot_w = (0..100).find(|&x| (0..rows).any(|y| "│┤".contains(buf.get(x, y).symbol()) && x > 50)).unwrap();
-    let last_col = plot_w - 1;
-    assert!((0..rows).any(|y| buf.get(last_col, y).symbol() != " "), "dernière chandelle absente");
+    // ┤ n'existe que sur l'axe (les mèches utilisent │) : il repère la colonne de l'axe
+    let axis_x = (0..100).find(|&x| (0..rows).any(|y| buf.get(x, y).symbol() == "┤")).unwrap();
+    assert!((0..rows).any(|y| !matches!(buf.get(axis_x - 1, y).symbol(), " " | "┈")), "dernière chandelle absente");
 }
 
 #[test]
@@ -1497,7 +1499,7 @@ fn every_row_fits_the_area_exactly() {
     for (w, h) in [(30, 8), (79, 24), (120, 30), (250, 60)] {
         let buf = draw(&d, w, h);
         assert_eq!(buf.area, Rect::new(0, 0, w, h)); // rien écrit hors zone : Buffer panique sinon
-        assert!(row(&buf, h - 2).trim().len() > 0, "labels du temps présents en {w}x{h}");
+        assert!(!row(&buf, h - 1).trim().is_empty(), "contexte temporel présent en {w}x{h}");
     }
 }
 
@@ -1558,6 +1560,9 @@ pub struct CandleChart<'a> { pub data: &'a OHLCData }
 impl Widget for CandleChart<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let candles = &self.data.candles;
+        if area.is_empty() {
+            return;
+        }
         if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
             buf.set_stringn(area.x, area.y, "Terminal trop petit", usize::from(area.width), Style::default().fg(Color::Yellow));
             return;
