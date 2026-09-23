@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::models::{Interval, WatchlistItem};
-use crate::watchlist_file;
+use crate::watchlist_file::{self, Entry};
 use crate::worker::{AppCommand, AppResult};
 
 /// Intervalle entre deux rafraîchissements automatiques des prix
@@ -44,6 +44,15 @@ pub enum Screen {
     ChartView,
     /// Mode saisie : les touches construisent un symbole (Enter valide, ESC annule)
     InputMode,
+}
+
+/// Ce que la saisie en cours va produire
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputKind {
+    /// Symbole d'un nouveau ticker
+    AddTicker,
+    /// "QUANTITÉ PRIX_DE_REVIENT" pour ce symbole (vide = retirer la position)
+    Position(String),
 }
 
 /// Message affiché dans la barre d'état
@@ -91,6 +100,9 @@ pub struct App {
     /// Buffer de saisie pour le mode Input
     pub input_buffer: String,
 
+    /// Nature de la saisie en cours
+    pub input_kind: InputKind,
+
     /// Fichier de la watchlist (None dans les tests : rien n'est écrit)
     pub watchlist_path: Option<PathBuf>,
 
@@ -109,11 +121,29 @@ pub struct App {
 }
 
 impl App {
-    /// Crée l'application avec des tickers pas encore chargés
+    /// Crée l'application avec des tickers suivis, pas encore chargés
     pub fn new(symbols: Vec<String>, watchlist_path: Option<PathBuf>, now: Instant) -> Self {
+        let entries = symbols.into_iter().map(Entry::watch).collect();
+        Self::from_entries(entries, watchlist_path, now)
+    }
+
+    /// Crée l'application depuis les lignes du fichier de watchlist (positions comprises)
+    pub fn from_entries(
+        entries: Vec<Entry>,
+        watchlist_path: Option<PathBuf>,
+        now: Instant,
+    ) -> Self {
+        let watchlist = entries
+            .into_iter()
+            .map(|entry| {
+                let mut item = WatchlistItem::new(entry.symbol);
+                item.position = entry.position;
+                item
+            })
+            .collect();
         Self {
             running: true,
-            watchlist: symbols.into_iter().map(WatchlistItem::new).collect(),
+            watchlist,
             selected_index: 0,
             current_screen: Screen::Dashboard,
             current_interval: Interval::default(),
@@ -122,6 +152,7 @@ impl App {
             pending: 0,
             status: None,
             input_buffer: String::new(),
+            input_kind: InputKind::AddTicker,
             watchlist_path,
             list_offset: Cell::new(0),
             last_refresh: now,
@@ -333,8 +364,15 @@ impl App {
         let Some(path) = &self.watchlist_path else {
             return;
         };
-        let symbols: Vec<&str> = self.watchlist.iter().map(|i| i.symbol.as_str()).collect();
-        if let Err(e) = watchlist_file::save(path, &symbols) {
+        let entries: Vec<Entry> = self
+            .watchlist
+            .iter()
+            .map(|item| Entry {
+                symbol: item.symbol.clone(),
+                position: item.position,
+            })
+            .collect();
+        if let Err(e) = watchlist_file::save(path, &entries) {
             self.set_error(format!("{e:#}"), now);
         }
     }
@@ -346,7 +384,47 @@ impl App {
     /// Ouvre la saisie d'un symbole (annule toute confirmation en cours)
     pub fn start_input(&mut self) {
         self.current_screen = Screen::InputMode;
+        self.input_kind = InputKind::AddTicker;
         self.input_buffer.clear();
+    }
+
+    /// Ouvre la saisie de la position du ticker sélectionné, pré-remplie
+    pub fn start_position_input(&mut self) {
+        // CONCEPT RUST : borrow checker
+        // - `item` emprunte `self` : on en extrait des valeurs possédées (String)
+        //   avant de modifier `self`, sinon l'emprunt serait encore vivant
+        let Some((symbol, prefill)) = self.selected_item().map(|item| {
+            let prefill = item
+                .position
+                .map_or_else(String::new, |p| format!("{} {}", p.quantity, p.unit_cost));
+            (item.symbol.clone(), prefill)
+        }) else {
+            return;
+        };
+        self.input_buffer = prefill;
+        self.input_kind = InputKind::Position(symbol);
+        self.current_screen = Screen::InputMode;
+    }
+
+    /// Applique une position saisie ; texte vide = retirer la position
+    pub fn set_position(&mut self, symbol: &str, text: &str, now: Instant) {
+        let position = match watchlist_file::parse_position(text) {
+            Ok(position) => position,
+            Err(e) => {
+                self.set_error(format!("{symbol} : {e:#}"), now);
+                return;
+            }
+        };
+        let Some(item) = self.watchlist.iter_mut().find(|i| i.symbol == symbol) else {
+            return;
+        };
+        item.position = position;
+        let text = match position {
+            Some(p) => format!("{symbol} : position {} à {}", p.quantity, p.unit_cost),
+            None => format!("{symbol} : position retirée"),
+        };
+        self.set_status(text, now);
+        self.save_watchlist(now);
     }
 
     /// Annule la saisie et retourne au dashboard

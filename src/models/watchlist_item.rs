@@ -26,6 +26,15 @@ impl Quote {
     }
 }
 
+/// Position détenue sur un ticker
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Position {
+    /// Quantité détenue (fractionnaire pour la crypto)
+    pub quantity: f64,
+    /// Prix de revient unitaire, dans la devise du ticker
+    pub unit_cost: f64,
+}
+
 /// Tout ce qu'un chargement Yahoo rapporte pour un ticker
 #[derive(Debug, Clone)]
 pub struct FetchedTicker {
@@ -57,6 +66,9 @@ pub struct WatchlistItem {
 
     /// Nombre de décimales pour afficher le prix
     pub price_decimals: usize,
+
+    /// Position détenue (None = simple suivi)
+    pub position: Option<Position>,
 }
 
 impl WatchlistItem {
@@ -69,6 +81,7 @@ impl WatchlistItem {
             quote: None,
             currency: None,
             price_decimals: 2,
+            position: None,
         }
     }
 
@@ -106,6 +119,42 @@ impl WatchlistItem {
     /// Retourne true si le ticker est en hausse sur la journée
     pub fn is_positive(&self) -> bool {
         self.change_percent().is_some_and(|c| c >= 0.0)
+    }
+
+    // ========================================================================
+    // Portefeuille
+    // ========================================================================
+    // CONCEPT RUST : Option chaînée avec `?`
+    // - Sans position ou sans cours, chaque méthode rend None : pas de NaN,
+    //   et l'appelant décide quoi afficher
+    // ========================================================================
+
+    /// Valeur de la position au cours actuel
+    pub fn market_value(&self) -> Option<f64> {
+        Some(self.position?.quantity * self.current_price()?)
+    }
+
+    /// Coût d'acquisition de la position
+    pub fn cost_basis(&self) -> Option<f64> {
+        let position = self.position?;
+        Some(position.quantity * position.unit_cost)
+    }
+
+    /// Plus-value latente (valeur − coût)
+    pub fn unrealized_pnl(&self) -> Option<f64> {
+        Some(self.market_value()? - self.cost_basis()?)
+    }
+
+    /// Plus-value latente en % du coût
+    pub fn unrealized_pnl_percent(&self) -> Option<f64> {
+        let cost = self.cost_basis().filter(|c| *c != 0.0)?;
+        Some(self.unrealized_pnl()? / cost * 100.0)
+    }
+
+    /// Gain ou perte du jour sur la position
+    pub fn day_pnl(&self) -> Option<f64> {
+        let quote = self.quote?;
+        Some(self.position?.quantity * (quote.price - quote.previous_close?))
     }
 
     /// Prix avec la précision et la devise de la place ("339.75 USD", "1.1453 USD")
@@ -155,5 +204,33 @@ mod tests {
         assert!(item.is_positive());
         assert_eq!(item.name, "Apple Inc.");
         assert_eq!(item.format_price(1.14532), "1.15 USD");
+    }
+
+    fn quoted(price: f64, previous_close: f64, position: Option<Position>) -> WatchlistItem {
+        let mut item = WatchlistItem::new("AAPL".into());
+        item.quote = Some(Quote {
+            price,
+            previous_close: Some(previous_close),
+        });
+        item.position = position;
+        item
+    }
+
+    #[test]
+    fn position_values_and_pnl() {
+        let position = Position {
+            quantity: 10.0,
+            unit_cost: 100.0,
+        };
+        let item = quoted(110.0, 105.0, Some(position));
+        assert_eq!(item.market_value(), Some(1100.0));
+        assert_eq!(item.unrealized_pnl(), Some(100.0));
+        assert_eq!(item.unrealized_pnl_percent(), Some(10.0));
+        assert_eq!(item.day_pnl(), Some(50.0));
+        // Sans position ou sans cours : rien, jamais NaN
+        assert_eq!(quoted(110.0, 105.0, None).market_value(), None);
+        let mut no_quote = quoted(1.0, 1.0, Some(position));
+        no_quote.quote = None;
+        assert_eq!(no_quote.unrealized_pnl(), None);
     }
 }

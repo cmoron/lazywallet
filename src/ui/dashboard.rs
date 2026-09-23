@@ -18,8 +18,9 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Screen, REFRESH_EVERY};
+use crate::app::{App, InputKind, Screen, REFRESH_EVERY};
 use crate::models::WatchlistItem;
+use crate::portfolio;
 use crate::ui::chart::render_chart_screen;
 
 /// Dessine l'écran courant
@@ -58,18 +59,54 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(Color::Cyan))
         .title(" LazyWallet ")
         .title_alignment(Alignment::Center);
-    let text = format!(
-        "{} tickers · rafraîchi toutes les {} s",
-        app.watchlist.len(),
-        REFRESH_EVERY.as_secs()
-    );
-    let paragraph = Paragraph::new(Line::from(Span::styled(
-        text,
-        Style::default().fg(Color::Gray),
-    )))
-    .block(block)
-    .alignment(Alignment::Center);
+    let totals = portfolio::totals(&app.watchlist);
+    let line = if totals.is_empty() {
+        Line::from(Span::styled(
+            format!(
+                "{} tickers · rafraîchi toutes les {} s",
+                app.watchlist.len(),
+                REFRESH_EVERY.as_secs()
+            ),
+            Style::default().fg(Color::Gray),
+        ))
+    } else {
+        // Une section par devise : valeur, plus-value latente, gain du jour
+        let mut spans = vec![Span::styled(
+            "Portefeuille",
+            Style::default().fg(Color::Gray),
+        )];
+        for total in &totals {
+            spans.extend([
+                Span::styled(
+                    format!("  ·  {} {:.2} ", total.currency, total.value),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{:+.2} ({:+.2}%)", total.pnl(), total.pnl_percent()),
+                    Style::default().fg(sign_color(total.pnl())),
+                ),
+                Span::styled(" jour ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("{:+.2}", total.day_pnl),
+                    Style::default().fg(sign_color(total.day_pnl)),
+                ),
+            ]);
+        }
+        Line::from(spans)
+    };
+    let paragraph = Paragraph::new(line)
+        .block(block)
+        .alignment(Alignment::Center);
     frame.render_widget(paragraph, area);
+}
+
+/// Vert si positif (ou nul), rouge sinon
+fn sign_color(value: f64) -> Color {
+    if value >= 0.0 {
+        Color::Green
+    } else {
+        Color::Red
+    }
 }
 
 /// Tronque un texte à une longueur maximale avec ellipse
@@ -99,17 +136,35 @@ enum Column {
     Name,
     Price,
     Change,
+    Quantity,
+    Value,
+    Pnl,
 }
 
 impl Column {
     /// Colonnes par ordre de priorité (la première est toujours affichée)
-    const PRIORITY: [Column; 4] = [Column::Symbol, Column::Price, Column::Change, Column::Name];
+    const PRIORITY: [Column; 7] = [
+        Column::Symbol,
+        Column::Price,
+        Column::Change,
+        Column::Value,
+        Column::Pnl,
+        Column::Name,
+        Column::Quantity,
+    ];
+
+    /// Colonnes qui n'ont de sens qu'avec au moins une position
+    fn is_portfolio(self) -> bool {
+        matches!(self, Column::Quantity | Column::Value | Column::Pnl)
+    }
 
     fn width(self) -> u16 {
         match self {
-            Column::Symbol | Column::Change => 10,
+            Column::Symbol | Column::Change | Column::Quantity => 10,
             Column::Name => 20,
             Column::Price => 16,
+            Column::Value => 14,
+            Column::Pnl => 22,
         }
     }
 
@@ -119,11 +174,14 @@ impl Column {
             Column::Name => "Nom",
             Column::Price => "Prix",
             Column::Change => "Jour",
+            Column::Quantity => "Qté",
+            Column::Value => "Valeur",
+            Column::Pnl => "+/- latent",
         }
     }
 
     fn right_aligned(self) -> bool {
-        matches!(self, Column::Price | Column::Change)
+        !matches!(self, Column::Symbol | Column::Name)
     }
 
     /// Contenu de la cellule pour un item
@@ -140,15 +198,36 @@ impl Column {
                 let arrow = if c >= 0.0 { "▲" } else { "▼" };
                 format!("{arrow} {c:+.2}%")
             }),
+            Column::Quantity => item
+                .position
+                .map_or_else(String::new, |p| p.quantity.to_string()),
+            Column::Value => item
+                .market_value()
+                .map_or_else(String::new, |v| format!("{v:.2}")),
+            Column::Pnl => match (item.unrealized_pnl(), item.unrealized_pnl_percent()) {
+                (Some(pnl), Some(percent)) => format!("{pnl:+.2} ({percent:+.2}%)"),
+                _ => String::new(),
+            },
+        }
+    }
+
+    /// Couleur propre à la cellule (la plus-value suit son signe, pas la journée)
+    fn color(self, item: &WatchlistItem) -> Option<Color> {
+        match self {
+            Column::Pnl => item.unrealized_pnl().map(sign_color),
+            _ => None,
         }
     }
 }
 
 /// Colonnes qui tiennent dans `width`, dans l'ordre d'affichage
-fn columns_for(width: u16) -> Vec<Column> {
+fn columns_for(width: u16, has_positions: bool) -> Vec<Column> {
     let mut used = 0u16;
     let mut columns = Vec::new();
     for column in Column::PRIORITY {
+        if column.is_portfolio() && !has_positions {
+            continue;
+        }
         // +1 : espacement entre colonnes
         let needed = column.width() + 1;
         if columns.is_empty() || used + needed <= width {
@@ -181,9 +260,13 @@ fn render_watchlist(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let columns = columns_for(block.inner(area).width);
-    let cell = |column: Column, text: String| {
-        let line = Line::from(text);
+    let has_positions = app.watchlist.iter().any(|item| item.position.is_some());
+    let columns = columns_for(block.inner(area).width, has_positions);
+    let cell = |column: Column, text: String, color: Option<Color>| {
+        let line = Line::from(match color {
+            Some(color) => Span::styled(text, Style::default().fg(color)),
+            None => Span::raw(text),
+        });
         Cell::from(if column.right_aligned() {
             line.alignment(Alignment::Right)
         } else {
@@ -194,7 +277,7 @@ fn render_watchlist(frame: &mut Frame, app: &App, area: Rect) {
     let header = Row::new(
         columns
             .iter()
-            .map(|&c| cell(c, c.header().to_string()))
+            .map(|&c| cell(c, c.header().to_string(), None))
             .collect::<Vec<_>>(),
     )
     .style(
@@ -212,7 +295,7 @@ fn render_watchlist(frame: &mut Frame, app: &App, area: Rect) {
         Row::new(
             columns
                 .iter()
-                .map(|&c| cell(c, c.text(item, app.is_loading())))
+                .map(|&c| cell(c, c.text(item, app.is_loading()), c.color(item)))
                 .collect::<Vec<_>>(),
         )
         .style(Style::default().fg(color))
@@ -325,10 +408,16 @@ fn render_input_footer(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Green))
-        .title(" [Enter] Ajouter  [Esc] Annuler ");
+        .title(" [Enter] Valider  [Esc] Annuler ");
+    let prompt = match &app.input_kind {
+        InputKind::AddTicker => "Ajouter : ".to_string(),
+        InputKind::Position(symbol) => {
+            format!("Position {symbol} (quantité prix_de_revient, vide = aucune) : ")
+        }
+    };
     let input_line = Line::from(vec![
         Span::styled(
-            "Ajouter : ",
+            prompt,
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -438,5 +527,42 @@ mod tests {
         let text = screen_sized(&app, 80, 16);
         // La vue ne saute pas : T30 reste visible en remontant de quelques lignes
         assert!(text.contains("T25") && text.contains("T30"), "{text}");
+    }
+
+    #[test]
+    fn positions_show_value_pnl_and_currency_totals() {
+        let now = Instant::now();
+        let mut app = App::new(vec!["AAPL".into(), "TSLA".into()], None, now);
+        let utc = FixedOffset::east_opt(0).unwrap();
+        let mut data = OHLCData::new("AAPL".into(), Interval::M30, utc);
+        data.add_candle(OHLC::new(Utc::now(), 1.0, 1.0, 1.0, 110.0, 0));
+        app.watchlist[0].apply(FetchedTicker {
+            data,
+            long_name: Some("Apple Inc.".into()),
+            quote: Quote {
+                price: 110.0,
+                previous_close: Some(105.0),
+            },
+            currency: Some("USD".into()),
+            price_decimals: 2,
+        });
+        app.watchlist[0].position = Some(crate::models::Position {
+            quantity: 10.0,
+            unit_cost: 100.0,
+        });
+        let text = screen_sized(&app, 140, 12);
+        assert!(text.contains("1100.00"), "valeur : {text}");
+        assert!(
+            text.contains("+100.00") && text.contains("+10.00%"),
+            "plus-value : {text}"
+        );
+        assert!(
+            text.contains("USD") && text.contains("+50.00"),
+            "total du jour : {text}"
+        );
+
+        // Saisie d'une position : le prompt nomme le ticker
+        app.start_position_input();
+        assert!(screen_sized(&app, 140, 12).contains("Position AAPL"));
     }
 }

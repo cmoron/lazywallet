@@ -84,8 +84,8 @@ fn main() -> Result<()> {
     spawn_worker(command_rx, result_tx)?;
 
     let path = watchlist_file::default_path()?;
-    let symbols = watchlist_file::load(&path)?;
-    let mut app = App::new(symbols, Some(path), Instant::now());
+    let entries = watchlist_file::load(&path)?;
+    let mut app = App::from_entries(entries, Some(path), Instant::now());
 
     install_panic_hook();
     let mut terminal = setup_terminal()?;

@@ -14,7 +14,7 @@ use crossterm::event::{
     self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
 
-use crate::app::{App, Screen};
+use crate::app::{App, InputKind, Screen};
 use crate::models::Interval;
 use crate::worker::AppCommand;
 
@@ -84,6 +84,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, now: Instant) -> Vec<AppCommand>
         KeyCode::Down | KeyCode::Char('j' | 'J') => app.navigate_down(),
         KeyCode::Enter => return app.open_chart().into_iter().collect(),
         KeyCode::Char('a' | 'A') => app.start_input(),
+        KeyCode::Char('p' | 'P') => app.start_position_input(),
         KeyCode::Char('d' | 'D') if confirming_delete => app.delete_selected(now),
         KeyCode::Char('d' | 'D') if app.selected_item().is_some() => app.confirm_delete = true,
         _ => {}
@@ -96,23 +97,41 @@ fn handle_input_key(app: &mut App, key: KeyEvent, now: Instant) -> Vec<AppComman
     match key.code {
         KeyCode::Esc => app.cancel_input(),
         KeyCode::Enter => {
-            let symbol = app.take_input();
-            return app.request_add(&symbol, now).into_iter().collect();
+            let kind = app.input_kind.clone();
+            let text = app.take_input();
+            match kind {
+                InputKind::AddTicker => return app.request_add(&text, now).into_iter().collect(),
+                InputKind::Position(symbol) => app.set_position(&symbol, &text, now),
+            }
         }
         KeyCode::Backspace => {
             app.input_buffer.pop();
         }
         KeyCode::Char(c)
-            if is_ticker_char(c)
+            if accepts(&app.input_kind, c)
                 && !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
         {
-            app.input_buffer.push(c.to_ascii_uppercase());
+            // La virgule décimale est lue comme un point
+            let c = if c == ',' {
+                '.'
+            } else {
+                c.to_ascii_uppercase()
+            };
+            app.input_buffer.push(c);
         }
         _ => {}
     }
     Vec::new()
+}
+
+/// Caractères acceptés selon la saisie en cours
+fn accepts(kind: &InputKind, c: char) -> bool {
+    match kind {
+        InputKind::AddTicker => is_ticker_char(c),
+        InputKind::Position(_) => c.is_ascii_digit() || matches!(c, '.' | ',' | ' '),
+    }
 }
 
 /// Caractères des symboles Yahoo : AAPL, BTC-USD, BRK.B, EURUSD=X, ^GSPC
@@ -224,5 +243,40 @@ mod tests {
     fn refresh_key_reloads_everything() {
         let mut app = app();
         assert_eq!(press(&mut app, key('r')).len(), 2);
+    }
+
+    #[test]
+    fn p_edits_the_position_of_the_selected_ticker() {
+        let mut app = app();
+        press(&mut app, key('p'));
+        assert_eq!(app.input_buffer, "", "pas de position : saisie vide");
+        type_str(&mut app, "10 150,25");
+        press(&mut app, code(KeyCode::Enter));
+        let position = app.watchlist[0].position.unwrap();
+        assert_eq!((position.quantity, position.unit_cost), (10.0, 150.25));
+
+        // Rouvrir pré-remplit ; vider puis valider retire la position
+        press(&mut app, key('p'));
+        assert_eq!(app.input_buffer, "10 150.25");
+        for _ in 0..app.input_buffer.len() {
+            press(&mut app, code(KeyCode::Backspace));
+        }
+        press(&mut app, code(KeyCode::Enter));
+        assert!(app.watchlist[0].position.is_none());
+    }
+
+    #[test]
+    fn invalid_position_is_rejected_with_an_error() {
+        let mut app = app();
+        press(&mut app, key('p'));
+        type_str(&mut app, "10");
+        press(&mut app, code(KeyCode::Enter));
+        assert!(app.watchlist[0].position.is_none());
+        assert!(app.status.as_ref().is_some_and(|s| s.is_error));
+        // Les lettres ne s'écrivent pas dans une saisie de position
+        press(&mut app, key('p'));
+        type_str(&mut app, "q1x");
+        assert_eq!(app.input_buffer, "1");
+        assert!(app.is_running());
     }
 }
