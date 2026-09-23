@@ -17,6 +17,8 @@ use std::cell::Cell;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
+
 use crate::models::{Interval, WatchlistItem};
 use crate::watchlist_file::{self, Entry};
 use crate::worker::{AppCommand, AppResult};
@@ -53,6 +55,14 @@ pub enum InputKind {
     AddTicker,
     /// "QUANTITÉ PRIX_DE_REVIENT" pour ce symbole (vide = retirer la position)
     Position(String),
+}
+
+/// Repères datés du graphique affiché, pour survivre à un rechargement
+#[derive(Debug, Clone, Copy)]
+struct ChartAnchor {
+    interval: Interval,
+    end: DateTime<Utc>,
+    cursor: Option<DateTime<Utc>>,
 }
 
 /// Message affiché dans la barre d'état
@@ -242,8 +252,16 @@ impl App {
         match result {
             // Ticker supprimé entre-temps : on jette le résultat
             AppResult::Loaded { symbol, fetched } => {
+                // Graphique affiché rechargé : garder le curseur et la vue sur les
+                // mêmes dates, même si la fenêtre de données a glissé
+                let displayed = self.current_screen == Screen::ChartView
+                    && self.selected_item().is_some_and(|i| i.symbol == symbol);
+                let anchor = if displayed { self.chart_anchor() } else { None };
                 if let Some(item) = self.watchlist.iter_mut().find(|i| i.symbol == symbol) {
                     item.apply(fetched);
+                }
+                if displayed {
+                    self.reanchor_chart(anchor);
                 }
             }
             AppResult::Added { symbol, fetched } => {
@@ -362,12 +380,15 @@ impl App {
     /// Chandelles visibles (`first..end`) : celles du dernier rendu, sinon une
     /// estimation minimale d'après le décalage
     fn visible_range(&self, len: usize) -> (usize, usize) {
-        let end = len.saturating_sub(self.chart_offset).max(1);
-        self.chart_view
+        let estimated_end = len.saturating_sub(self.chart_offset).max(1);
+        // La vue vient du rendu précédent : elle peut dépasser des données
+        // rechargées entre-temps, on la borne ici, une seule fois
+        let (first, end) = self
+            .chart_view
             .get()
-            .map_or((end - 1, end), |(first, end)| {
-                (first.min(end), end.min(len))
-            })
+            .unwrap_or((estimated_end - 1, estimated_end));
+        let end = end.min(len).max(1);
+        (first.min(end - 1), end)
     }
 
     /// Déplace le curseur de `delta` chandelles, en faisant défiler si besoin
@@ -409,6 +430,50 @@ impl App {
         } else {
             self.chart_offset.saturating_sub(half_page)
         };
+    }
+
+    /// Repères datés de la vue : (intervalle, date de la dernière chandelle
+    /// visible, date sous le curseur)
+    fn chart_anchor(&self) -> Option<ChartAnchor> {
+        let data = self.selected_item()?.data.as_ref()?;
+        let end = data.len().checked_sub(self.chart_offset)?.checked_sub(1)?;
+        Some(ChartAnchor {
+            interval: data.interval,
+            end: data.candles.get(end)?.timestamp,
+            cursor: self
+                .cursor
+                .and_then(|c| data.candles.get(c))
+                .map(|c| c.timestamp),
+        })
+    }
+
+    /// Replace vue et curseur sur les dates d'avant le rechargement
+    ///
+    /// CONCEPT : Les index bougent quand la fenêtre de données glisse (nouvelles
+    /// chandelles à droite, anciennes qui sortent à gauche) ; les dates, non.
+    /// Autre intervalle, ou dates disparues : retour au présent.
+    fn reanchor_chart(&mut self, anchor: Option<ChartAnchor>) {
+        // La vue du rendu précédent ne correspond plus aux nouvelles données
+        self.chart_view.set(None);
+        let Some(anchor) = anchor else {
+            self.reset_chart_view();
+            return;
+        };
+        let Some(data) = self.selected_item().and_then(|item| item.data.as_ref()) else {
+            self.reset_chart_view();
+            return;
+        };
+        let find = |timestamp| data.candles.iter().position(|c| c.timestamp == timestamp);
+        let end = (data.interval == anchor.interval)
+            .then(|| find(anchor.end))
+            .flatten();
+        let Some(end) = end else {
+            self.reset_chart_view();
+            return;
+        };
+        let cursor = anchor.cursor.and_then(find);
+        self.chart_offset = data.len() - 1 - end;
+        self.cursor = cursor;
     }
 
     /// Retour au présent, sans curseur
@@ -537,7 +602,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::models::{FetchedTicker, OHLCData, Quote, OHLC};
-    use chrono::{FixedOffset, Utc};
+    use chrono::{FixedOffset, TimeZone, Utc};
 
     fn fetched(symbol: &str, interval: Interval) -> FetchedTicker {
         let utc = FixedOffset::east_opt(0).unwrap();
@@ -747,17 +812,35 @@ mod tests {
         }));
     }
 
+    /// Chandelles horaires `from..from+len`, prix = index : chacune a sa propre date
+    fn candles(from: u32, len: u32) -> Vec<OHLC> {
+        let t0 = Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap();
+        (from..from + len)
+            .map(|i| {
+                let p = f64::from(i);
+                OHLC::new(t0 + chrono::Duration::hours(i64::from(i)), p, p, p, p, 0)
+            })
+            .collect()
+    }
+
+    fn reload(app: &mut App, candles: Vec<OHLC>) {
+        let mut fetched = fetched("AAPL", Interval::M30);
+        fetched.data.candles = candles;
+        app.pending = 1;
+        app.apply_result(
+            AppResult::Loaded {
+                symbol: "AAPL".into(),
+                fetched,
+            },
+            Instant::now(),
+        );
+    }
+
     /// App sur le graphique d'un ticker avec `len` chandelles, `visible` affichées
     fn chart_app(len: u32, visible: usize) -> App {
         let (mut app, now) = app(&["AAPL"]);
         let mut fetched = fetched("AAPL", Interval::M30);
-        fetched.data.candles.clear();
-        for i in 0..len {
-            let p = f64::from(i);
-            fetched
-                .data
-                .add_candle(OHLC::new(Utc::now(), p, p, p, p, 0));
-        }
+        fetched.data.candles = candles(0, len);
         app.apply_result(
             AppResult::Loaded {
                 symbol: "AAPL".into(),
@@ -823,5 +906,37 @@ mod tests {
         app.chart_offset = 40;
         app.change_interval(Interval::next);
         assert_eq!((app.cursor, app.chart_offset), (None, 0));
+    }
+
+    #[test]
+    fn shrinking_reload_while_scrolled_does_not_panic() {
+        // Revue : vue périmée (168..256) + données réduites à 20 → soustraction négative
+        let mut app = chart_app(300, 88);
+        app.scroll_chart(-1);
+        app.chart_view.set(Some((168, 256)));
+        reload(&mut app, candles(0, 20));
+        app.scroll_chart(-1);
+        app.move_cursor(-1);
+        assert!(app.chart_offset < 20);
+        assert!(app.cursor.is_some_and(|c| c < 20));
+    }
+
+    #[test]
+    fn refresh_keeps_cursor_and_view_on_the_same_candles() {
+        // Revue : fenêtre glissante (5 anciennes chandelles en moins, 3 nouvelles)
+        // → le curseur désignait une autre date
+        let mut app = chart_app(100, 20);
+        app.chart_offset = 10; // fin de vue : chandelle 89
+        app.cursor = Some(80);
+        reload(&mut app, candles(5, 98)); // chandelles 5..103
+        let data = app.selected_item().unwrap().data.as_ref().unwrap();
+        let at = |i: usize| data.candles[i].close;
+        assert_eq!(
+            app.cursor.map(at),
+            Some(80.0),
+            "même chandelle sous le curseur"
+        );
+        let end = data.len() - app.chart_offset;
+        assert!((at(end - 1) - 89.0).abs() < f64::EPSILON, "même fin de vue");
     }
 }
