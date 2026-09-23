@@ -22,6 +22,7 @@ use crate::app::{App, InputKind, Screen, REFRESH_EVERY};
 use crate::models::WatchlistItem;
 use crate::portfolio;
 use crate::ui::chart::render_chart_screen;
+use crate::ui::sparkline::{sparkline, trend_closes};
 
 /// Dessine l'écran courant
 ///
@@ -136,6 +137,7 @@ enum Column {
     Name,
     Price,
     Change,
+    Trend,
     Quantity,
     Value,
     Pnl,
@@ -143,10 +145,11 @@ enum Column {
 
 impl Column {
     /// Colonnes par ordre de priorité (la première est toujours affichée)
-    const PRIORITY: [Column; 7] = [
+    const PRIORITY: [Column; 8] = [
         Column::Symbol,
         Column::Price,
         Column::Change,
+        Column::Trend,
         Column::Value,
         Column::Pnl,
         Column::Name,
@@ -161,7 +164,7 @@ impl Column {
     fn width(self) -> u16 {
         match self {
             Column::Symbol | Column::Change | Column::Quantity => 10,
-            Column::Name => 20,
+            Column::Name | Column::Trend => 20,
             Column::Price => 16,
             Column::Value => 14,
             Column::Pnl => 22,
@@ -174,6 +177,7 @@ impl Column {
             Column::Name => "Nom",
             Column::Price => "Prix",
             Column::Change => "Jour",
+            Column::Trend => "Tendance",
             Column::Quantity => "Qté",
             Column::Value => "Valeur",
             Column::Pnl => "+/- latent",
@@ -181,7 +185,7 @@ impl Column {
     }
 
     fn right_aligned(self) -> bool {
-        !matches!(self, Column::Symbol | Column::Name)
+        !matches!(self, Column::Symbol | Column::Name | Column::Trend)
     }
 
     /// Contenu de la cellule pour un item
@@ -197,6 +201,9 @@ impl Column {
             Column::Change => item.change_percent().map_or_else(String::new, |c| {
                 let arrow = if c >= 0.0 { "▲" } else { "▼" };
                 format!("{arrow} {c:+.2}%")
+            }),
+            Column::Trend => item.data.as_ref().map_or_else(String::new, |data| {
+                sparkline(&trend_closes(data), usize::from(self.width()))
             }),
             Column::Quantity => item
                 .position
@@ -438,7 +445,7 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
-    use chrono::{FixedOffset, Utc};
+    use chrono::{FixedOffset, TimeZone, Utc};
     use ratatui::{backend::TestBackend, Terminal};
 
     use crate::models::{FetchedTicker, Interval, OHLCData, Quote, OHLC};
@@ -564,5 +571,37 @@ mod tests {
         // Saisie d'une position : le prompt nomme le ticker
         app.start_position_input();
         assert!(screen_sized(&app, 140, 12).contains("Position AAPL"));
+    }
+
+    #[test]
+    fn rows_show_a_trend_sparkline() {
+        let now = Instant::now();
+        let mut app = App::new(vec!["BTC-USD".into()], None, now);
+        let utc = FixedOffset::east_opt(0).unwrap();
+        let mut data = OHLCData::new("BTC-USD".into(), Interval::M30, utc);
+        let t0 = Utc.with_ymd_and_hms(2026, 9, 1, 10, 0, 0).unwrap();
+        for i in 0..8u32 {
+            let p = 100.0 + f64::from(i);
+            data.add_candle(OHLC::new(
+                t0 + chrono::Duration::minutes(30 * i64::from(i)),
+                p,
+                p,
+                p,
+                p,
+                0,
+            ));
+        }
+        app.watchlist[0].apply(FetchedTicker {
+            data,
+            long_name: None,
+            quote: Quote {
+                price: 107.0,
+                previous_close: Some(100.0),
+            },
+            currency: Some("USD".into()),
+            price_decimals: 2,
+        });
+        let text = screen_sized(&app, 120, 10);
+        assert!(text.contains('█') && text.contains('▁'), "{text}");
     }
 }
