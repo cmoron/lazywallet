@@ -9,7 +9,8 @@
 
 use crate::models::{Interval, OHLCData};
 
-const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+/// Blocs de hauteur croissante (1/8 à 8/8 de cellule)
+pub(crate) const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /// Nombre de chandelles journalières/hebdo gardées pour la tendance
 const LONG_TREND_CANDLES: usize = 60;

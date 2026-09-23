@@ -18,13 +18,21 @@ use ratatui::{
 };
 
 use crate::models::{OHLCData, OHLC};
+use crate::ui::chart::abbreviate;
 use crate::ui::chart::geometry::{visible_columns, AXIS_ROWS};
 use crate::ui::chart::price_axis::{price_ticks, PriceTicks};
 use crate::ui::chart::time_axis::time_axis;
+use crate::ui::sparkline::LEVELS;
 
 /// Taille minimale : en dessous, un message remplace le graphique
 pub const MIN_WIDTH: u16 = 30;
 pub const MIN_HEIGHT: u16 = AXIS_ROWS + 5;
+
+/// Hauteur du panneau de volume, pris sur le bas du graphique
+pub const VOLUME_ROWS: u16 = 3;
+
+/// En dessous de ce nombre de lignes de graphique, pas de panneau de volume
+const VOLUME_MIN_ROWS: u16 = 14;
 
 /// Largeur provisoire de l'axe des prix pour la première passe
 const PROVISIONAL_AXIS: u16 = 10;
@@ -268,18 +276,28 @@ impl Widget for CandleChart<'_> {
         }
 
         let rows = area.height - AXIS_ROWS;
-        let axis_width = fit_axis_width(candles, area.width, rows, self.price_decimals);
+        // Panneau de volume : seulement s'il y a la place et du volume (le forex n'en a pas)
+        let show_volume = rows >= VOLUME_MIN_ROWS && candles.iter().any(|c| c.volume > 0);
+        let candle_rows = if show_volume {
+            rows - VOLUME_ROWS
+        } else {
+            rows
+        };
+        let axis_width = fit_axis_width(candles, area.width, candle_rows, self.price_decimals);
         let plot_width = area.width - axis_width;
         let (first, columns) = visible_columns(plot_width, candles.len());
         let visible = &candles[first..];
-        let scale = Scale::new(visible, rows);
-        let ticks = price_ticks(scale.min, scale.max, rows);
+        let scale = Scale::new(visible, candle_rows);
+        let ticks = price_ticks(scale.min, scale.max, candle_rows);
 
         if let Some(view) = self.view {
             view.set(Some((first, candles.len())));
         }
 
         draw_candles(buf, area, visible, &columns, &scale);
+        if show_volume {
+            draw_volume(buf, area, candle_rows, plot_width, visible, &columns);
+        }
         if let Some(column) = self
             .cursor
             .and_then(|c| c.checked_sub(first))
@@ -353,6 +371,60 @@ fn draw_candles(buf: &mut Buffer, area: Rect, visible: &[OHLC], columns: &[u16],
                     .set_char(symbol)
                     .set_style(style);
             }
+        }
+    }
+}
+
+/// Barres de volume sous les chandelles, 8 niveaux par ligne
+///
+/// CONCEPT : Chaque barre est mesurée en huitièmes de cellule
+/// (`VOLUME_ROWS × 8` niveaux au total) : les lignes pleines reçoivent `█`,
+/// la ligne du sommet le bloc partiel correspondant.
+fn draw_volume(
+    buf: &mut Buffer,
+    area: Rect,
+    top: u16,
+    plot_width: u16,
+    visible: &[OHLC],
+    columns: &[u16],
+) {
+    let axis_x = area.x + plot_width;
+    let gray = Style::default().fg(Color::Gray);
+    for row in 0..VOLUME_ROWS {
+        buf.get_mut(axis_x, area.y + top + row)
+            .set_char('│')
+            .set_style(gray);
+    }
+    let max = visible.iter().map(|c| c.volume).max().unwrap_or(0);
+    if max == 0 {
+        return;
+    }
+    let label_width = usize::from(area.width - plot_width - 1);
+    buf.set_stringn(
+        axis_x + 1,
+        area.y + top,
+        format!(" {}", abbreviate(max)),
+        label_width,
+        gray,
+    );
+
+    let levels = u64::from(VOLUME_ROWS) * 8;
+    for (candle, &column) in visible.iter().zip(columns) {
+        // Arrondi au huitième supérieur : un volume non nul reste visible
+        let height = (candle.volume * levels).div_ceil(max);
+        let style = Style::default()
+            .fg(candle_color(candle))
+            .add_modifier(Modifier::DIM);
+        for level_row in 0..VOLUME_ROWS {
+            let filled = height.saturating_sub(u64::from(level_row) * 8).min(8);
+            if filled == 0 {
+                break;
+            }
+            let symbol = LEVELS[usize::try_from(filled - 1).unwrap_or(7)];
+            let y = area.y + top + VOLUME_ROWS - 1 - level_row;
+            buf.get_mut(area.x + column, y)
+                .set_char(symbol)
+                .set_style(style);
         }
     }
 }
@@ -628,5 +700,49 @@ mod tests {
             .render(area, &mut buf);
         let text: String = (0..20).map(|y| row(&buf, y)).collect();
         assert!(!text.contains('┆'));
+    }
+
+    /// Chandelles avec volume : la dernière a le plus gros volume
+    fn data_with_volume(n: u64) -> OHLCData {
+        let mut d = data(usize::try_from(n).unwrap(), |i| {
+            100.0 + f64::from(u32::try_from(i % 7).unwrap())
+        });
+        for (i, candle) in (1..).zip(d.candles.iter_mut()) {
+            candle.volume = i * 1_000;
+        }
+        d
+    }
+
+    fn render_rows(data: &OHLCData, width: u16, height: u16) -> Vec<String> {
+        let buf = draw(data, width, height);
+        (0..height).map(|y| row(&buf, y)).collect()
+    }
+
+    #[test]
+    fn volume_pane_shows_bars_and_max_label() {
+        let rows = render_rows(&data_with_volume(300), 100, 30);
+        let pane = &rows
+            [30 - usize::from(AXIS_ROWS) - usize::from(VOLUME_ROWS)..30 - usize::from(AXIS_ROWS)];
+        // Label du volume max en haut du panneau, barre pleine sous la dernière chandelle
+        assert!(pane[0].contains("300.0k"), "{pane:?}");
+        let axis_x = pane[0].chars().position(|c| c == '│').unwrap();
+        for line in pane {
+            assert_eq!(line.chars().nth(axis_x - 1), Some('█'), "{pane:?}");
+        }
+    }
+
+    #[test]
+    fn no_volume_pane_without_volume_or_room() {
+        // Forex : volume toujours nul
+        let flat = draw(
+            &data(300, |i| 100.0 + f64::from(u32::try_from(i % 7).unwrap())),
+            100,
+            30,
+        );
+        let text: String = (0..30).map(|y| row(&flat, y)).collect();
+        assert!(!text.contains("0.0k") && !text.contains("Vol"), "{text}");
+        // Trop peu de lignes : pas de panneau
+        let text = render_rows(&data_with_volume(300), 100, 14).concat();
+        assert!(!text.contains("300.0k"), "{text}");
     }
 }
