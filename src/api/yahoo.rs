@@ -57,6 +57,20 @@ struct Meta {
     /// Décalage de la place en secondes (champ Yahoo tout en minuscules)
     #[serde(rename = "gmtoffset")]
     gmt_offset: Option<i32>,
+    current_trading_period: Option<TradingPeriods>,
+}
+
+/// Séances du jour : pré-ouverture, régulière, après-clôture
+#[derive(Debug, Deserialize)]
+struct TradingPeriods {
+    regular: Option<TradingPeriod>,
+}
+
+/// Bornes d'une séance (timestamps Unix)
+#[derive(Debug, Deserialize)]
+struct TradingPeriod {
+    start: i64,
+    end: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,12 +223,25 @@ fn parse_yahoo_response(
         previous_close: data.previous_session_close(),
     };
 
+    // Séance régulière : absente ou incohérente → pas d'indicateur de marché
+    let session = meta
+        .current_trading_period
+        .and_then(|periods| periods.regular)
+        .and_then(|period| {
+            Some((
+                DateTime::from_timestamp(period.start, 0)?,
+                DateTime::from_timestamp(period.end, 0)?,
+            ))
+        });
+
     Ok(FetchedTicker {
         data,
         long_name: meta.long_name,
         quote,
         currency: meta.currency,
         price_decimals: meta.price_hint.unwrap_or(2),
+        session,
+        fetched_at: Utc::now(),
     })
 }
 
@@ -269,6 +296,19 @@ mod tests {
             (fetched.currency.as_deref(), fetched.price_decimals),
             (Some("USD"), 2)
         );
+    }
+
+    #[test]
+    fn parses_the_regular_trading_period() {
+        let t = ts(2026, 9, 22, 14, 0);
+        let (start, end) = (ts(2026, 9, 22, 13, 30), ts(2026, 9, 22, 20, 0));
+        let body = fixture(&format!(
+            r#"[{{"meta":{{"currentTradingPeriod":{{"regular":{{"start":{start},"end":{end},"gmtoffset":-14400}}}}}},
+                "timestamp":[{t}],"indicators":{{"quote":[{{"open":[1],"high":[1],"low":[1],"close":[1],"volume":[1]}}]}}}}]"#
+        ));
+        let fetched = parse_yahoo_response(body, "AAPL", Interval::M30).unwrap();
+        let (open, close) = fetched.session.unwrap();
+        assert_eq!((open.timestamp(), close.timestamp()), (start, end));
     }
 
     #[test]

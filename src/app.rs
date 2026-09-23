@@ -463,6 +463,8 @@ mod tests {
             },
             currency: None,
             price_decimals: 2,
+            session: None,
+            fetched_at: chrono::Utc::now(),
         }
     }
 

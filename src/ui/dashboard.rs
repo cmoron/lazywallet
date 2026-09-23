@@ -18,6 +18,8 @@ use ratatui::{
     Frame,
 };
 
+use chrono::{DateTime, Local, Utc};
+
 use crate::app::{App, InputKind, Screen, REFRESH_EVERY};
 use crate::models::WatchlistItem;
 use crate::portfolio;
@@ -95,6 +97,22 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         }
         Line::from(spans)
     };
+    let mut line = line;
+    // Heure (locale de la machine) du chargement le plus récent
+    if let Some(updated) = app
+        .watchlist
+        .iter()
+        .filter_map(|item| item.updated_at)
+        .max()
+    {
+        line.spans.push(Span::styled(
+            format!(
+                "  ·  MàJ {}",
+                updated.with_timezone(&Local).format("%H:%M:%S")
+            ),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
     let paragraph = Paragraph::new(line)
         .block(block)
         .alignment(Alignment::Center);
@@ -133,6 +151,7 @@ fn truncate_with_ellipsis(text: &str, max_len: usize) -> String {
 /// qu'elles tiennent, puis on les affiche dans l'ordre naturel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Column {
+    Market,
     Symbol,
     Name,
     Price,
@@ -145,8 +164,9 @@ enum Column {
 
 impl Column {
     /// Colonnes par ordre de priorité (la première est toujours affichée)
-    const PRIORITY: [Column; 8] = [
+    const PRIORITY: [Column; 9] = [
         Column::Symbol,
+        Column::Market,
         Column::Price,
         Column::Change,
         Column::Trend,
@@ -163,6 +183,7 @@ impl Column {
 
     fn width(self) -> u16 {
         match self {
+            Column::Market => 1,
             Column::Symbol | Column::Change | Column::Quantity => 10,
             Column::Name | Column::Trend => 20,
             Column::Price => 16,
@@ -173,6 +194,7 @@ impl Column {
 
     fn header(self) -> &'static str {
         match self {
+            Column::Market => "",
             Column::Symbol => "Symbole",
             Column::Name => "Nom",
             Column::Price => "Prix",
@@ -185,12 +207,21 @@ impl Column {
     }
 
     fn right_aligned(self) -> bool {
-        !matches!(self, Column::Symbol | Column::Name | Column::Trend)
+        !matches!(
+            self,
+            Column::Market | Column::Symbol | Column::Name | Column::Trend
+        )
     }
 
     /// Contenu de la cellule pour un item
-    fn text(self, item: &WatchlistItem, loading: bool) -> String {
+    fn text(self, item: &WatchlistItem, loading: bool, now: DateTime<Utc>) -> String {
         match self {
+            // ● marché ouvert, ○ fermé, rien si Yahoo n'a pas donné la séance
+            Column::Market => match item.is_market_open(now) {
+                Some(true) => "●".to_string(),
+                Some(false) => "○".to_string(),
+                None => String::new(),
+            },
             Column::Symbol => item.symbol.clone(),
             Column::Name => truncate_with_ellipsis(&item.name, usize::from(self.width())),
             Column::Price => item.current_price().map_or_else(
@@ -219,8 +250,12 @@ impl Column {
     }
 
     /// Couleur propre à la cellule (la plus-value suit son signe, pas la journée)
-    fn color(self, item: &WatchlistItem) -> Option<Color> {
+    fn color(self, item: &WatchlistItem, now: DateTime<Utc>) -> Option<Color> {
         match self {
+            Column::Market => {
+                item.is_market_open(now)
+                    .map(|open| if open { Color::Green } else { Color::DarkGray })
+            }
             Column::Pnl => item.unrealized_pnl().map(sign_color),
             _ => None,
         }
@@ -267,6 +302,7 @@ fn render_watchlist(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let now = Utc::now();
     let has_positions = app.watchlist.iter().any(|item| item.position.is_some());
     let columns = columns_for(block.inner(area).width, has_positions);
     let cell = |column: Column, text: String, color: Option<Color>| {
@@ -302,7 +338,10 @@ fn render_watchlist(frame: &mut Frame, app: &App, area: Rect) {
         Row::new(
             columns
                 .iter()
-                .map(|&c| cell(c, c.text(item, app.is_loading()), c.color(item)))
+                .map(|&c| {
+                    let text = c.text(item, app.is_loading(), now);
+                    cell(c, text, c.color(item, now))
+                })
                 .collect::<Vec<_>>(),
         )
         .style(Style::default().fg(color))
@@ -480,6 +519,8 @@ mod tests {
             },
             currency: Some("USD".into()),
             price_decimals: 4,
+            session: None,
+            fetched_at: chrono::Utc::now(),
         });
         app.pending = 1;
         let text = screen(&app);
@@ -552,6 +593,8 @@ mod tests {
             },
             currency: Some("USD".into()),
             price_decimals: 2,
+            session: None,
+            fetched_at: chrono::Utc::now(),
         });
         app.watchlist[0].position = Some(crate::models::Position {
             quantity: 10.0,
@@ -600,8 +643,37 @@ mod tests {
             },
             currency: Some("USD".into()),
             price_decimals: 2,
+            session: None,
+            fetched_at: chrono::Utc::now(),
         });
         let text = screen_sized(&app, 120, 10);
         assert!(text.contains('█') && text.contains('▁'), "{text}");
+    }
+
+    #[test]
+    fn market_dot_and_last_update_are_shown() {
+        let now = Instant::now();
+        let mut app = App::new(vec!["BTC-USD".into()], None, now);
+        let utc = FixedOffset::east_opt(0).unwrap();
+        let mut data = OHLCData::new("BTC-USD".into(), Interval::M30, utc);
+        data.add_candle(OHLC::new(Utc::now(), 1.0, 1.0, 1.0, 1.0, 0));
+        app.watchlist[0].apply(FetchedTicker {
+            data,
+            long_name: None,
+            quote: Quote {
+                price: 1.0,
+                previous_close: Some(1.0),
+            },
+            currency: None,
+            price_decimals: 2,
+            session: Some((
+                Utc::now() - chrono::Duration::hours(1),
+                Utc::now() + chrono::Duration::hours(1),
+            )),
+            fetched_at: Utc::now(),
+        });
+        let text = screen_sized(&app, 120, 10);
+        assert!(text.contains('●'), "marché ouvert : {text}");
+        assert!(text.contains("MàJ"), "heure de mise à jour : {text}");
     }
 }

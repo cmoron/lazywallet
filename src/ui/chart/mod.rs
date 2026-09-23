@@ -17,6 +17,8 @@ use ratatui::{
     Frame,
 };
 
+use chrono::Utc;
+
 use crate::app::App;
 use crate::models::WatchlistItem;
 use crate::ui::dashboard::status_line;
@@ -114,6 +116,14 @@ fn render_header(frame: &mut Frame, app: &App, item: &WatchlistItem, area: Rect)
             }
             spans.push(Span::raw("    "));
         }
+        if let Some(open) = item.is_market_open(Utc::now()) {
+            let (text, color) = if open {
+                ("● Marché ouvert    ", Color::Green)
+            } else {
+                ("○ Marché fermé    ", Color::DarkGray)
+            };
+            spans.push(Span::styled(text, Style::default().fg(color)));
+        }
         spans.extend([
             key("[h/l]"),
             Span::raw(" Intervalle  "),
@@ -183,6 +193,8 @@ mod tests {
             },
             currency: Some("USD".into()),
             price_decimals: 2,
+            session: None,
+            fetched_at: chrono::Utc::now(),
         }
     }
 
@@ -219,5 +231,24 @@ mod tests {
         assert!(screen(&app, 80, 20).contains("Pas de données pour NOPE"));
         app.pending = 1;
         assert!(screen(&app, 80, 20).contains("Chargement"));
+    }
+
+    #[test]
+    fn chart_header_shows_market_state() {
+        let mut app = App::new(vec!["BTC-USD".into()], None, Instant::now());
+        let mut fetched = sample_fetched(Interval::M30, 50);
+        let now = Utc::now();
+        fetched.session = Some((
+            now - chrono::Duration::hours(1),
+            now + chrono::Duration::hours(1),
+        ));
+        app.watchlist[0].apply(fetched);
+        app.current_screen = Screen::ChartView;
+        assert!(screen(&app, 140, 20).contains("Marché ouvert"));
+        app.watchlist[0].session = Some((
+            now + chrono::Duration::hours(1),
+            now + chrono::Duration::hours(2),
+        ));
+        assert!(screen(&app, 140, 20).contains("Marché fermé"));
     }
 }

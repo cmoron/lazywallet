@@ -9,6 +9,8 @@
 // 3. Types Copy : Quote est petite, on la copie au lieu de l'emprunter
 // ============================================================================
 
+use chrono::{DateTime, Utc};
+
 use crate::models::OHLCData;
 
 /// Prix courant et clôture de référence pour la variation du jour
@@ -44,6 +46,10 @@ pub struct FetchedTicker {
     pub currency: Option<String>,
     /// Décimales conseillées par Yahoo (`priceHint` : 2 pour une action, 4 pour du forex)
     pub price_decimals: usize,
+    /// Séance régulière en cours ou prochaine (ouverture, fermeture)
+    pub session: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    /// Moment du chargement
+    pub fetched_at: DateTime<Utc>,
 }
 
 /// Un ticker dans la watchlist avec ses données
@@ -69,6 +75,12 @@ pub struct WatchlistItem {
 
     /// Position détenue (None = simple suivi)
     pub position: Option<Position>,
+
+    /// Séance régulière (ouverture, fermeture) du dernier chargement
+    pub session: Option<(DateTime<Utc>, DateTime<Utc>)>,
+
+    /// Moment du dernier chargement réussi
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 impl WatchlistItem {
@@ -82,6 +94,8 @@ impl WatchlistItem {
             currency: None,
             price_decimals: 2,
             position: None,
+            session: None,
+            updated_at: None,
         }
     }
 
@@ -103,6 +117,8 @@ impl WatchlistItem {
         });
         self.currency = fetched.currency;
         self.price_decimals = fetched.price_decimals;
+        self.session = fetched.session;
+        self.updated_at = Some(fetched.fetched_at);
         self.data = Some(fetched.data);
     }
 
@@ -119,6 +135,12 @@ impl WatchlistItem {
     /// Retourne true si le ticker est en hausse sur la journée
     pub fn is_positive(&self) -> bool {
         self.change_percent().is_some_and(|c| c >= 0.0)
+    }
+
+    /// Marché ouvert à `now` ? None si Yahoo n'a pas donné la séance
+    pub fn is_market_open(&self, now: DateTime<Utc>) -> Option<bool> {
+        let (open, close) = self.session?;
+        Some(open <= now && now < close)
     }
 
     // ========================================================================
@@ -197,6 +219,8 @@ mod tests {
             },
             currency: Some("USD".into()),
             price_decimals: 2,
+            session: None,
+            fetched_at: chrono::Utc::now(),
         };
         item.apply(fetched(Interval::M30, Some(100.0)));
         item.apply(fetched(Interval::W1, None)); // passage en hebdo dans le graphique
@@ -232,5 +256,20 @@ mod tests {
         let mut no_quote = quoted(1.0, 1.0, Some(position));
         no_quote.quote = None;
         assert_eq!(no_quote.unrealized_pnl(), None);
+    }
+
+    #[test]
+    fn market_is_open_only_inside_the_session() {
+        use chrono::{Duration, TimeZone, Utc};
+        let open = Utc.with_ymd_and_hms(2026, 9, 22, 13, 30, 0).unwrap();
+        let mut item = WatchlistItem::new("AAPL".into());
+        assert_eq!(item.is_market_open(open), None, "séance inconnue");
+        item.session = Some((open, open + Duration::hours(6)));
+        assert_eq!(
+            item.is_market_open(open - Duration::minutes(1)),
+            Some(false)
+        );
+        assert_eq!(item.is_market_open(open), Some(true));
+        assert_eq!(item.is_market_open(open + Duration::hours(6)), Some(false));
     }
 }
