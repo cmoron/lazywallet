@@ -126,6 +126,9 @@ pub struct App {
     /// widget — même principe que `list_offset`
     pub chart_view: Cell<Option<(usize, usize)>>,
 
+    /// Graphique : moyennes mobiles MA20 / MA50 affichées (touche m)
+    pub show_moving_averages: bool,
+
     /// Dernier rafraîchissement (automatique ou manuel)
     last_refresh: Instant,
 }
@@ -168,6 +171,7 @@ impl App {
             chart_offset: 0,
             cursor: None,
             chart_view: Cell::new(None),
+            show_moving_averages: true,
             last_refresh: now,
         }
     }

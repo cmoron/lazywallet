@@ -5,6 +5,7 @@
 // ============================================================================
 
 pub mod geometry; // Colonnes des chandelles
+pub mod indicators; // Moyennes mobiles
 pub mod price_axis; // Graduations de l'axe des prix
 pub mod time_axis; // Graduations de l'axe du temps
 pub mod widget; // Widget ratatui du graphique
@@ -66,23 +67,17 @@ pub fn render_chart_screen(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::White))
         // Pas de plage de dates ici : le widget n'en montre qu'une partie, l'axe les porte
-        .title(if app.chart_offset > 0 {
-            // Vue décalée dans le passé : le rappeler, avec le moyen d'en revenir
-            format!(" {interval} · -{} chandelles [End] ", app.chart_offset)
-        } else {
-            format!(" {interval} ")
-        });
+        .title(chart_title(app, &interval));
 
     // CONCEPT : le widget reçoit la zone intérieure du cadre, jamais la bordure
     let inner = block.inner(chunks[1]);
+    let chart = CandleChart::new(data, item.price_decimals)
+        .window(data.len().saturating_sub(app.chart_offset))
+        .cursor(app.cursor)
+        .moving_averages(app.show_moving_averages)
+        .report_view(&app.chart_view);
     frame.render_widget(block, chunks[1]);
-    frame.render_widget(
-        CandleChart::new(data, item.price_decimals)
-            .window(data.len().saturating_sub(app.chart_offset))
-            .cursor(app.cursor)
-            .report_view(&app.chart_view),
-        inner,
-    );
+    frame.render_widget(chart, inner);
 }
 
 /// Header : état (confirmation, erreur, chargement) ou prix + raccourcis
@@ -159,6 +154,25 @@ fn render_header(frame: &mut Frame, app: &App, item: &WatchlistItem, area: Rect)
             .alignment(Alignment::Center),
         area,
     );
+}
+
+/// Titre du cadre : intervalle, décalage dans le passé, légende des moyennes
+fn chart_title(app: &App, interval: &str) -> Line<'static> {
+    let mut spans = vec![Span::raw(format!(" {interval} "))];
+    if app.chart_offset > 0 {
+        // Vue décalée dans le passé : le rappeler, avec le moyen d'en revenir
+        spans.push(Span::raw(format!(
+            "· -{} chandelles [End] ",
+            app.chart_offset
+        )));
+    }
+    if app.show_moving_averages {
+        spans.extend([
+            Span::styled("· MA20 • ", Style::default().fg(Color::Yellow)),
+            Span::styled("MA50 • ", Style::default().fg(Color::Magenta)),
+        ]);
+    }
+    Line::from(spans)
 }
 
 /// Détail de la chandelle sous le curseur : date, OHLC, volume
@@ -337,5 +351,15 @@ mod tests {
         assert_eq!(abbreviate(12_345), "12.3k");
         assert_eq!(abbreviate(1_234_567), "1.2M");
         assert_eq!(abbreviate(3_400_000_000), "3.4G");
+    }
+
+    #[test]
+    fn title_shows_the_moving_average_legend() {
+        let mut app = App::new(vec!["BTC-USD".into()], None, Instant::now());
+        app.watchlist[0].apply(sample_fetched(Interval::M30, 100));
+        app.current_screen = Screen::ChartView;
+        assert!(screen(&app, 140, 20).contains("MA20"));
+        app.show_moving_averages = false;
+        assert!(!screen(&app, 140, 20).contains("MA20"));
     }
 }

@@ -75,6 +75,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent, now: Instant) -> Vec<AppCommand>
         KeyCode::PageUp if on_chart => app.scroll_chart(-1),
         KeyCode::PageDown if on_chart => app.scroll_chart(1),
         KeyCode::End if on_chart => app.reset_chart_view(),
+        KeyCode::Char('m' | 'M') if on_chart => {
+            app.show_moving_averages = !app.show_moving_averages;
+        }
         KeyCode::Char('l' | 'L') if on_chart => {
             return app.change_interval(Interval::next).into_iter().collect()
         }
@@ -307,5 +310,16 @@ mod tests {
         assert_eq!(app.current_screen, Screen::ChartView);
         press(&mut app, code(KeyCode::Esc));
         assert_eq!(app.current_screen, Screen::Dashboard);
+    }
+
+    #[test]
+    fn m_toggles_moving_averages_on_the_chart() {
+        let mut app = app();
+        assert!(app.show_moving_averages, "affichées par défaut");
+        press(&mut app, key('m'));
+        assert!(app.show_moving_averages, "sans effet sur le dashboard");
+        press(&mut app, code(KeyCode::Enter));
+        press(&mut app, key('m'));
+        assert!(!app.show_moving_averages);
     }
 }

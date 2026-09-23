@@ -20,6 +20,7 @@ use ratatui::{
 use crate::models::{OHLCData, OHLC};
 use crate::ui::chart::abbreviate;
 use crate::ui::chart::geometry::{visible_columns, AXIS_ROWS};
+use crate::ui::chart::indicators::sma;
 use crate::ui::chart::price_axis::{price_ticks, PriceTicks};
 use crate::ui::chart::time_axis::time_axis;
 use crate::ui::sparkline::LEVELS;
@@ -27,6 +28,9 @@ use crate::ui::sparkline::LEVELS;
 /// Taille minimale : en dessous, un message remplace le graphique
 pub const MIN_WIDTH: u16 = 30;
 pub const MIN_HEIGHT: u16 = AXIS_ROWS + 5;
+
+/// Moyennes mobiles affichées : période et couleur
+const MOVING_AVERAGES: [(usize, Color); 2] = [(20, Color::Yellow), (50, Color::Magenta)];
 
 /// Hauteur du panneau de volume, pris sur le bas du graphique
 pub const VOLUME_ROWS: u16 = 3;
@@ -212,6 +216,8 @@ pub struct CandleChart<'a> {
     cursor: Option<usize>,
     /// Où écrire la plage visible (`first..end`) après le rendu
     view: Option<&'a Cell<Option<(usize, usize)>>>,
+    /// Afficher MA20 / MA50
+    moving_averages: bool,
 }
 
 impl<'a> CandleChart<'a> {
@@ -222,7 +228,15 @@ impl<'a> CandleChart<'a> {
             end: None,
             cursor: None,
             view: None,
+            moving_averages: false,
         }
+    }
+
+    /// Superpose les moyennes mobiles MA20 et MA50
+    #[must_use]
+    pub fn moving_averages(mut self, enabled: bool) -> Self {
+        self.moving_averages = enabled;
+        self
     }
 
     /// Affiche les chandelles jusqu'à `end` (exclue) : remonter dans le temps
@@ -295,6 +309,9 @@ impl Widget for CandleChart<'_> {
         }
 
         draw_candles(buf, area, visible, &columns, &scale);
+        if self.moving_averages {
+            draw_moving_averages(buf, area, candles, first, &columns, &scale);
+        }
         if show_volume {
             draw_volume(buf, area, candle_rows, plot_width, visible, &columns);
         }
@@ -372,6 +389,64 @@ fn draw_candles(buf: &mut Buffer, area: Rect, visible: &[OHLC], columns: &[u16],
                     .set_style(style);
             }
         }
+    }
+}
+
+/// Moyennes mobiles en pointillés `•`, par-dessus les mèches mais sous les corps
+///
+/// Calculées sur toutes les chandelles jusqu'à la fin de la fenêtre : la
+/// moyenne est juste dès le bord gauche. Quand les chandelles sont espacées,
+/// la colonne vide entre deux reçoit la moyenne des deux points.
+fn draw_moving_averages(
+    buf: &mut Buffer,
+    area: Rect,
+    candles: &[OHLC],
+    first: usize,
+    columns: &[u16],
+    scale: &Scale,
+) {
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    for (period, color) in MOVING_AVERAGES {
+        let values = &sma(&closes, period)[first..];
+        let style = Style::default().fg(color);
+        for (i, (&column, value)) in columns.iter().zip(values).enumerate() {
+            let Some(value) = *value else { continue };
+            put_average_dot(buf, area, column, value, scale, style);
+            let next = columns.get(i + 1).zip(values.get(i + 1).copied().flatten());
+            if let Some((&next_column, next_value)) = next {
+                if next_column - column == 2 {
+                    put_average_dot(
+                        buf,
+                        area,
+                        column + 1,
+                        f64::midpoint(value, next_value),
+                        scale,
+                        style,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Un point de moyenne, s'il est dans la plage de prix et pas sur un corps
+fn put_average_dot(
+    buf: &mut Buffer,
+    area: Rect,
+    column: u16,
+    value: f64,
+    scale: &Scale,
+    style: Style,
+) {
+    let height = scale.height(value);
+    // Hors de la vue : pas de point écrasé sur le bord
+    if height < 1.0 || height >= f64::from(scale.rows) + 1.0 {
+        return;
+    }
+    let cell = buf.get_mut(area.x + column, area.y + scale.row_of(value));
+    let is_body = matches!(cell.symbol(), "█" | "▄" | "▀" | "┃" | "╻" | "╹" | "╽" | "╿");
+    if !is_body {
+        cell.set_char('•').set_style(style);
     }
 }
 
@@ -744,5 +819,43 @@ mod tests {
         // Trop peu de lignes : pas de panneau
         let text = render_rows(&data_with_volume(300), 100, 14).concat();
         assert!(!text.contains("300.0k"), "{text}");
+    }
+
+    #[test]
+    fn moving_averages_are_drawn_when_enabled() {
+        let d = data(200, |i| 100.0 + f64::from(u32::try_from(i % 40).unwrap()));
+        let area = Rect::new(0, 0, 100, 25);
+        let render = |ma: bool| {
+            let mut buf = Buffer::empty(area);
+            CandleChart::new(&d, 2)
+                .moving_averages(ma)
+                .render(area, &mut buf);
+            (0..25).map(|y| row(&buf, y)).collect::<String>()
+        };
+        assert!(render(true).contains('•'));
+        assert!(!render(false).contains('•'));
+        // Moins de 20 chandelles : aucune moyenne complète
+        let short = data(15, |i| 100.0 + f64::from(u32::try_from(i).unwrap()));
+        let mut buf = Buffer::empty(area);
+        CandleChart::new(&short, 2)
+            .moving_averages(true)
+            .render(area, &mut buf);
+        assert!(!(0..25)
+            .map(|y| row(&buf, y))
+            .collect::<String>()
+            .contains('•'));
+    }
+
+    #[test]
+    fn averages_outside_the_price_range_are_not_clamped_on_the_edge() {
+        // 150 chandelles à 1000 puis 60 à 100 : la MA50 reste au-dessus de la vue
+        // un moment ; elle ne doit pas être écrasée sur la ligne du haut
+        let d = data(210, |i| if i < 150 { 1_000.0 } else { 100.0 });
+        let area = Rect::new(0, 0, 60, 25);
+        let mut buf = Buffer::empty(area);
+        CandleChart::new(&d, 2)
+            .moving_averages(true)
+            .render(area, &mut buf);
+        assert!(!row(&buf, 0).contains('•'), "{}", row(&buf, 0));
     }
 }
