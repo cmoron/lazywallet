@@ -20,7 +20,7 @@ use ratatui::{
 use chrono::Utc;
 
 use crate::app::App;
-use crate::models::WatchlistItem;
+use crate::models::{OHLCData, WatchlistItem, OHLC};
 use crate::ui::dashboard::status_line;
 use widget::CandleChart;
 
@@ -66,16 +66,21 @@ pub fn render_chart_screen(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::White))
         // Pas de plage de dates ici : le widget n'en montre qu'une partie, l'axe les porte
-        .title(format!(" {interval} "));
+        .title(if app.chart_offset > 0 {
+            // Vue décalée dans le passé : le rappeler, avec le moyen d'en revenir
+            format!(" {interval} · -{} chandelles [End] ", app.chart_offset)
+        } else {
+            format!(" {interval} ")
+        });
 
     // CONCEPT : le widget reçoit la zone intérieure du cadre, jamais la bordure
     let inner = block.inner(chunks[1]);
     frame.render_widget(block, chunks[1]);
     frame.render_widget(
-        CandleChart {
-            data,
-            price_decimals: item.price_decimals,
-        },
+        CandleChart::new(data, item.price_decimals)
+            .window(data.len().saturating_sub(app.chart_offset))
+            .cursor(app.cursor)
+            .report_view(&app.chart_view),
         inner,
     );
 }
@@ -87,55 +92,66 @@ fn render_header(frame: &mut Frame, app: &App, item: &WatchlistItem, area: Rect)
         .border_style(Style::default().fg(Color::Cyan))
         .title(format!(" {} · {} ", item.symbol, item.name));
 
-    let line = status_line(app).unwrap_or_else(|| {
-        let key = |k: &'static str| {
-            Span::styled(
-                k,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-        };
-        let mut spans = Vec::new();
-        if let Some(price) = item.current_price() {
-            let color = if item.is_positive() {
-                Color::Green
-            } else {
-                Color::Red
-            };
-            spans.push(Span::styled(
-                item.format_price(price),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ));
-            if let Some(change) = item.change_percent() {
-                let arrow = if change >= 0.0 { "▲" } else { "▼" };
-                spans.push(Span::styled(
-                    format!("  {arrow} {change:+.2}%"),
-                    Style::default().fg(color),
-                ));
-            }
-            spans.push(Span::raw("    "));
-        }
-        if let Some(open) = item.is_market_open(Utc::now()) {
-            let (text, color) = if open {
-                ("● Marché ouvert    ", Color::Green)
-            } else {
-                ("○ Marché fermé    ", Color::DarkGray)
-            };
-            spans.push(Span::styled(text, Style::default().fg(color)));
-        }
-        spans.extend([
-            key("[h/l]"),
-            Span::raw(" Intervalle  "),
-            key("[r]"),
-            Span::raw(" Rafraîchir  "),
-            key("[Esc]"),
-            Span::raw(" Retour  "),
-            key("[q]"),
-            Span::raw(" Quitter"),
-        ]);
-        Line::from(spans)
+    let cursor_candle = app.cursor.and_then(|c| {
+        item.data
+            .as_ref()
+            .and_then(|d| Some((d, d.candles.get(c)?)))
     });
+    let line = status_line(app)
+        .or_else(|| cursor_candle.map(|(data, candle)| cursor_line(item, data, candle)))
+        .unwrap_or_else(|| {
+            let key = |k: &'static str| {
+                Span::styled(
+                    k,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
+            };
+            let mut spans = Vec::new();
+            if let Some(price) = item.current_price() {
+                let color = if item.is_positive() {
+                    Color::Green
+                } else {
+                    Color::Red
+                };
+                spans.push(Span::styled(
+                    item.format_price(price),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+                if let Some(change) = item.change_percent() {
+                    let arrow = if change >= 0.0 { "▲" } else { "▼" };
+                    spans.push(Span::styled(
+                        format!("  {arrow} {change:+.2}%"),
+                        Style::default().fg(color),
+                    ));
+                }
+                spans.push(Span::raw("    "));
+            }
+            if let Some(open) = item.is_market_open(Utc::now()) {
+                let (text, color) = if open {
+                    ("● Marché ouvert    ", Color::Green)
+                } else {
+                    ("○ Marché fermé    ", Color::DarkGray)
+                };
+                spans.push(Span::styled(text, Style::default().fg(color)));
+            }
+            spans.extend([
+                key("[h/l]"),
+                Span::raw(" Intervalle  "),
+                key("[←→]"),
+                Span::raw(" Curseur  "),
+                key("[PgUp/PgDn]"),
+                Span::raw(" Défiler  "),
+                key("[r]"),
+                Span::raw(" Rafraîchir  "),
+                key("[Esc]"),
+                Span::raw(" Retour  "),
+                key("[q]"),
+                Span::raw(" Quitter"),
+            ]);
+            Line::from(spans)
+        });
 
     frame.render_widget(
         Paragraph::new(line)
@@ -143,6 +159,56 @@ fn render_header(frame: &mut Frame, app: &App, item: &WatchlistItem, area: Rect)
             .alignment(Alignment::Center),
         area,
     );
+}
+
+/// Détail de la chandelle sous le curseur : date, OHLC, volume
+fn cursor_line(item: &WatchlistItem, data: &OHLCData, candle: &OHLC) -> Line<'static> {
+    let price =
+        |label: &str, value: f64| format!("{label} {value:.prec$}  ", prec = item.price_decimals);
+    let color = if candle.is_bullish() {
+        Color::Green
+    } else {
+        Color::Red
+    };
+    let mut spans = vec![
+        Span::styled(
+            format!(
+                "{}    ",
+                data.local_time(candle).format("%a %d/%m/%Y %H:%M")
+            ),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            [
+                price("O", candle.open),
+                price("H", candle.high),
+                price("B", candle.low),
+                price("C", candle.close),
+            ]
+            .concat(),
+            Style::default().fg(color),
+        ),
+    ];
+    if candle.volume > 0 {
+        spans.push(Span::raw(format!("Vol {}  ", abbreviate(candle.volume))));
+    }
+    spans.push(Span::styled(
+        "  [←→] Curseur  [End] Présent  [Esc] Masquer",
+        Style::default().fg(Color::DarkGray),
+    ));
+    Line::from(spans)
+}
+
+/// Volume abrégé : 950, 12.3k, 1.2M, 3.4G
+pub fn abbreviate(volume: u64) -> String {
+    #[allow(clippy::cast_precision_loss)] // affichage à 1 décimale
+    let value = volume as f64;
+    match volume {
+        0..1_000 => volume.to_string(),
+        1_000..1_000_000 => format!("{:.1}k", value / 1e3),
+        1_000_000..1_000_000_000 => format!("{:.1}M", value / 1e6),
+        _ => format!("{:.1}G", value / 1e9),
+    }
 }
 
 /// Message centré dans un cadre (pas de données, chargement...)
@@ -250,5 +316,26 @@ mod tests {
             now + chrono::Duration::hours(2),
         ));
         assert!(screen(&app, 140, 20).contains("Marché fermé"));
+    }
+
+    #[test]
+    fn cursor_shows_the_candle_in_the_header() {
+        let mut app = App::new(vec!["BTC-USD".into()], None, Instant::now());
+        app.watchlist[0].apply(sample_fetched(Interval::M30, 50));
+        app.current_screen = Screen::ChartView;
+        app.cursor = Some(10);
+        let text = screen(&app, 140, 20);
+        assert!(
+            text.contains("O 110.00") && text.contains("C 110.50"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn volumes_are_abbreviated() {
+        assert_eq!(abbreviate(950), "950");
+        assert_eq!(abbreviate(12_345), "12.3k");
+        assert_eq!(abbreviate(1_234_567), "1.2M");
+        assert_eq!(abbreviate(3_400_000_000), "3.4G");
     }
 }

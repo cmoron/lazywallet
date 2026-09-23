@@ -8,6 +8,8 @@
 //   sur la bordure (bug de l'ancien rendu, qui coupait les 2 dernières colonnes)
 // ============================================================================
 
+use std::cell::Cell;
+
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -188,10 +190,53 @@ fn text_width(text: &str) -> u16 {
 }
 
 /// Graphique en chandeliers d'un `OHLCData`
+///
+/// CONCEPT RUST : Builder
+/// - `new` donne le graphique par défaut (chandelles les plus récentes, sans curseur)
+/// - chaque option (`window`, `cursor`, `report_view`) consomme et rend `self`
 pub struct CandleChart<'a> {
-    pub data: &'a OHLCData,
+    data: &'a OHLCData,
     /// Précision du ticker (`priceHint`) pour le repère du dernier prix
-    pub price_decimals: usize,
+    price_decimals: usize,
+    /// Fin (exclue) de la fenêtre affichée ; None = jusqu'à la dernière chandelle
+    end: Option<usize>,
+    /// Chandelle sous le curseur
+    cursor: Option<usize>,
+    /// Où écrire la plage visible (`first..end`) après le rendu
+    view: Option<&'a Cell<Option<(usize, usize)>>>,
+}
+
+impl<'a> CandleChart<'a> {
+    pub fn new(data: &'a OHLCData, price_decimals: usize) -> Self {
+        Self {
+            data,
+            price_decimals,
+            end: None,
+            cursor: None,
+            view: None,
+        }
+    }
+
+    /// Affiche les chandelles jusqu'à `end` (exclue) : remonter dans le temps
+    #[must_use]
+    pub fn window(mut self, end: usize) -> Self {
+        self.end = Some(end);
+        self
+    }
+
+    /// Marque la colonne d'une chandelle
+    #[must_use]
+    pub fn cursor(mut self, cursor: Option<usize>) -> Self {
+        self.cursor = cursor;
+        self
+    }
+
+    /// Reporte la plage visible dans `view` (l'app en a besoin pour naviguer)
+    #[must_use]
+    pub fn report_view(mut self, view: &'a Cell<Option<(usize, usize)>>) -> Self {
+        self.view = Some(view);
+        self
+    }
 }
 
 impl Widget for CandleChart<'_> {
@@ -210,7 +255,8 @@ impl Widget for CandleChart<'_> {
             );
             return;
         }
-        let candles = &self.data.candles;
+        let all = &self.data.candles;
+        let candles = &all[..self.end.map_or(all.len(), |end| end.min(all.len()))];
         if candles.is_empty() {
             buf.set_string(
                 area.x,
@@ -229,7 +275,18 @@ impl Widget for CandleChart<'_> {
         let scale = Scale::new(visible, rows);
         let ticks = price_ticks(scale.min, scale.max, rows);
 
+        if let Some(view) = self.view {
+            view.set(Some((first, candles.len())));
+        }
+
         draw_candles(buf, area, visible, &columns, &scale);
+        if let Some(column) = self
+            .cursor
+            .and_then(|c| c.checked_sub(first))
+            .and_then(|i| columns.get(i))
+        {
+            draw_cursor(buf, area, *column, rows);
+        }
         let last = visible
             .last()
             .map(|c| (c, last_price_label(c, &ticks, self.price_decimals)));
@@ -296,6 +353,17 @@ fn draw_candles(buf: &mut Buffer, area: Rect, visible: &[OHLC], columns: &[u16],
                     .set_char(symbol)
                     .set_style(style);
             }
+        }
+    }
+}
+
+/// Ligne verticale pointillée du curseur, dans les cases vides seulement
+fn draw_cursor(buf: &mut Buffer, area: Rect, column: u16, rows: u16) {
+    let style = Style::default().fg(Color::White);
+    for row in 0..rows {
+        let cell = buf.get_mut(area.x + column, area.y + row);
+        if cell.symbol() == " " {
+            cell.set_char('┆').set_style(style);
         }
     }
 }
@@ -427,11 +495,7 @@ mod tests {
     fn draw(data: &OHLCData, width: u16, height: u16) -> Buffer {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
-        CandleChart {
-            data,
-            price_decimals: 2,
-        }
-        .render(area, &mut buf);
+        CandleChart::new(data, 2).render(area, &mut buf);
         buf
     }
 
@@ -526,5 +590,43 @@ mod tests {
                 "largeur {width} : axe {axis}, labels {needed}"
             );
         }
+    }
+
+    #[test]
+    fn window_end_shows_older_candles_and_reports_the_view() {
+        let d = data(100, |i| 100.0 + f64::from(u32::try_from(i).unwrap()));
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+        let view = std::cell::Cell::new(None);
+        CandleChart::new(&d, 2)
+            .window(50)
+            .report_view(&view)
+            .render(area, &mut buf);
+        let text: String = (0..20).map(|y| row(&buf, y)).collect();
+        // Dernière chandelle affichée : index 49, clôture 149.5
+        assert!(text.contains("149.50"), "{text}");
+        let (first, end) = view.get().unwrap();
+        assert_eq!(end, 50);
+        assert!(first < end);
+    }
+
+    #[test]
+    fn cursor_column_is_marked() {
+        let d = data(100, |i| 100.0 + f64::from(u32::try_from(i % 10).unwrap()));
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+        CandleChart::new(&d, 2)
+            .cursor(Some(90))
+            .render(area, &mut buf);
+        let text: String = (0..20).map(|y| row(&buf, y)).collect();
+        assert!(text.contains('┆'), "{text}");
+        // Curseur hors de la vue : rien n'est dessiné
+        let mut buf = Buffer::empty(area);
+        CandleChart::new(&d, 2)
+            .window(50)
+            .cursor(Some(90))
+            .render(area, &mut buf);
+        let text: String = (0..20).map(|y| row(&buf, y)).collect();
+        assert!(!text.contains('┆'));
     }
 }

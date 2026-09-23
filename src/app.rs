@@ -116,6 +116,16 @@ pub struct App {
     ///   partagée, sans emprunt mutable
     pub list_offset: Cell<usize>,
 
+    /// Graphique : nombre de chandelles récentes masquées à droite (0 = présent)
+    pub chart_offset: usize,
+
+    /// Graphique : chandelle sous le curseur (index dans les données), None = pas de curseur
+    pub cursor: Option<usize>,
+
+    /// Graphique : chandelles visibles au dernier rendu (`first..end`), écrit par le
+    /// widget — même principe que `list_offset`
+    pub chart_view: Cell<Option<(usize, usize)>>,
+
     /// Dernier rafraîchissement (automatique ou manuel)
     last_refresh: Instant,
 }
@@ -155,6 +165,9 @@ impl App {
             input_kind: InputKind::AddTicker,
             watchlist_path,
             list_offset: Cell::new(0),
+            chart_offset: 0,
+            cursor: None,
+            chart_view: Cell::new(None),
             last_refresh: now,
         }
     }
@@ -308,6 +321,7 @@ impl App {
             interval: self.current_interval,
         });
         self.current_screen = Screen::ChartView;
+        self.reset_chart_view();
         command
     }
 
@@ -322,11 +336,82 @@ impl App {
     /// - `step` vaut `Interval::next` ou `Interval::previous`
     pub fn change_interval(&mut self, step: fn(Interval) -> Interval) -> Option<AppCommand> {
         self.current_interval = step(self.current_interval);
+        self.reset_chart_view();
         let symbol = self.selected_item()?.symbol.clone();
         Some(AppCommand::Load {
             symbol,
             interval: self.current_interval,
         })
+    }
+
+    // ========================================================================
+    // Navigation dans le graphique
+    // ========================================================================
+
+    /// Nombre de chandelles du graphique affiché
+    fn chart_len(&self) -> usize {
+        self.selected_item()
+            .and_then(|item| item.data.as_ref())
+            .map_or(0, crate::models::OHLCData::len)
+    }
+
+    /// Chandelles visibles (`first..end`) : celles du dernier rendu, sinon une
+    /// estimation minimale d'après le décalage
+    fn visible_range(&self, len: usize) -> (usize, usize) {
+        let end = len.saturating_sub(self.chart_offset).max(1);
+        self.chart_view
+            .get()
+            .map_or((end - 1, end), |(first, end)| {
+                (first.min(end), end.min(len))
+            })
+    }
+
+    /// Déplace le curseur de `delta` chandelles, en faisant défiler si besoin
+    ///
+    /// Le premier appui fait apparaître le curseur sur la chandelle la plus
+    /// récente affichée, sans la déplacer.
+    pub fn move_cursor(&mut self, delta: isize) {
+        let len = self.chart_len();
+        if len == 0 {
+            return;
+        }
+        let (first, end) = self.visible_range(len);
+        let Some(current) = self.cursor.filter(|&c| c < len) else {
+            self.cursor = Some(end - 1);
+            return;
+        };
+        // CONCEPT RUST : saturating_add_signed — usize + isize sans passer sous 0
+        let target = current.saturating_add_signed(delta).min(len - 1);
+        if target < first {
+            self.chart_offset += first - target;
+        } else if target >= end {
+            self.chart_offset = self.chart_offset.saturating_sub(target + 1 - end);
+        }
+        self.chart_offset = self.chart_offset.min(len - 1);
+        self.cursor = Some(target);
+    }
+
+    /// Défile d'une demi-page : `direction < 0` vers le passé, `> 0` vers le présent
+    pub fn scroll_chart(&mut self, direction: isize) {
+        let len = self.chart_len();
+        if len == 0 {
+            return;
+        }
+        let (first, end) = self.visible_range(len);
+        let half_page = ((end - first) / 2).max(1);
+        self.chart_offset = if direction < 0 {
+            // Au moins une chandelle reste visible
+            (self.chart_offset + half_page).min(len - 1)
+        } else {
+            self.chart_offset.saturating_sub(half_page)
+        };
+    }
+
+    /// Retour au présent, sans curseur
+    pub fn reset_chart_view(&mut self) {
+        self.chart_offset = 0;
+        self.cursor = None;
+        self.chart_view.set(None);
     }
 
     // ========================================================================
@@ -656,5 +741,83 @@ mod tests {
             symbol: "TSLA".into(),
             interval: Interval::default()
         }));
+    }
+
+    /// App sur le graphique d'un ticker avec `len` chandelles, `visible` affichées
+    fn chart_app(len: u32, visible: usize) -> App {
+        let (mut app, now) = app(&["AAPL"]);
+        let mut fetched = fetched("AAPL", Interval::M30);
+        fetched.data.candles.clear();
+        for i in 0..len {
+            let p = f64::from(i);
+            fetched
+                .data
+                .add_candle(OHLC::new(Utc::now(), p, p, p, p, 0));
+        }
+        app.apply_result(
+            AppResult::Loaded {
+                symbol: "AAPL".into(),
+                fetched,
+            },
+            now,
+        );
+        app.open_chart();
+        let len = usize::try_from(len).unwrap();
+        app.chart_view.set(Some((len - visible, len)));
+        app
+    }
+
+    #[test]
+    fn first_arrow_shows_cursor_on_latest_visible_candle() {
+        let mut app = chart_app(100, 20);
+        app.move_cursor(-1);
+        assert_eq!((app.cursor, app.chart_offset), (Some(99), 0));
+        app.move_cursor(-1);
+        assert_eq!(app.cursor, Some(98));
+    }
+
+    #[test]
+    fn cursor_past_the_left_edge_scrolls_back_in_time() {
+        let mut app = chart_app(100, 20); // visibles : 80..100
+        app.cursor = Some(80);
+        app.move_cursor(-1);
+        assert_eq!((app.cursor, app.chart_offset), (Some(79), 1));
+        // Le rendu suivant montrerait 79..99 ; à droite on revient vers le présent
+        app.chart_view.set(Some((79, 99)));
+        app.cursor = Some(98);
+        app.move_cursor(1);
+        assert_eq!((app.cursor, app.chart_offset), (Some(99), 0));
+    }
+
+    #[test]
+    fn cursor_and_scroll_are_clamped_at_the_edges() {
+        let mut app = chart_app(30, 20);
+        app.cursor = Some(0);
+        app.chart_view.set(Some((0, 20)));
+        app.move_cursor(-1);
+        assert_eq!(app.cursor, Some(0));
+        app.cursor = Some(29);
+        app.chart_view.set(Some((10, 30)));
+        app.move_cursor(1);
+        assert_eq!((app.cursor, app.chart_offset), (Some(29), 0));
+        for _ in 0..10 {
+            app.scroll_chart(-1); // demi-page vers le passé, 10 fois
+        }
+        assert_eq!(app.chart_offset, 29, "au moins une chandelle reste visible");
+        app.scroll_chart(1);
+        assert_eq!(app.chart_offset, 19);
+    }
+
+    #[test]
+    fn end_key_and_interval_change_reset_navigation() {
+        let mut app = chart_app(100, 20);
+        app.cursor = Some(50);
+        app.chart_offset = 40;
+        app.reset_chart_view();
+        assert_eq!((app.cursor, app.chart_offset), (None, 0));
+        app.cursor = Some(50);
+        app.chart_offset = 40;
+        app.change_interval(Interval::next);
+        assert_eq!((app.cursor, app.chart_offset), (None, 0));
     }
 }

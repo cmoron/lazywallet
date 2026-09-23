@@ -67,7 +67,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent, now: Instant) -> Vec<AppCommand>
         KeyCode::Char('r' | 'R') => return app.refresh_commands(now),
 
         // Vue graphique
+        // Esc retire d'abord le curseur, puis quitte le graphique
+        KeyCode::Esc if on_chart && app.cursor.is_some() => app.cursor = None,
         KeyCode::Esc | KeyCode::Char(' ') if on_chart => app.show_dashboard(),
+        KeyCode::Left if on_chart => app.move_cursor(-1),
+        KeyCode::Right if on_chart => app.move_cursor(1),
+        KeyCode::PageUp if on_chart => app.scroll_chart(-1),
+        KeyCode::PageDown if on_chart => app.scroll_chart(1),
+        KeyCode::End if on_chart => app.reset_chart_view(),
         KeyCode::Char('l' | 'L') if on_chart => {
             return app.change_interval(Interval::next).into_iter().collect()
         }
@@ -278,5 +285,27 @@ mod tests {
         type_str(&mut app, "q1x");
         assert_eq!(app.input_buffer, "1");
         assert!(app.is_running());
+    }
+
+    #[test]
+    fn chart_navigation_keys() {
+        let mut app = app();
+        press(&mut app, code(KeyCode::Enter));
+        // Sans données : les flèches ne font rien (et ne paniquent pas)
+        press(&mut app, code(KeyCode::Left));
+        press(&mut app, code(KeyCode::PageUp));
+        assert_eq!((app.cursor, app.chart_offset), (None, 0));
+
+        // Esc retire d'abord le curseur, puis revient au dashboard
+        app.cursor = Some(3);
+        app.chart_offset = 7;
+        press(&mut app, code(KeyCode::End));
+        assert_eq!((app.cursor, app.chart_offset), (None, 0));
+        app.cursor = Some(3);
+        press(&mut app, code(KeyCode::Esc));
+        assert_eq!(app.cursor, None);
+        assert_eq!(app.current_screen, Screen::ChartView);
+        press(&mut app, code(KeyCode::Esc));
+        assert_eq!(app.current_screen, Screen::Dashboard);
     }
 }
