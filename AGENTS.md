@@ -44,12 +44,15 @@ et `cargo fmt --check` passent.
   `block.inner(area)`. Toute couche du graphique (chandelles, volume, moyennes,
   curseur) réutilise les colonnes de `visible_columns`.
 - Le rendu reporte ce qu'il a affiché via deux `Cell` de `App` (`list_offset`,
-  `chart_view`) ; la logique de navigation lit la valeur du **rendu précédent**.
-  Un test de navigation doit la fixer lui-même (`app.chart_view.set(...)`).
+  `chart_view`) ; la logique de navigation lit la valeur du **rendu précédent**,
+  qui peut être périmée (données rechargées entre-temps). Toute lecture la borne
+  contre les données actuelles avant usage, et chaque logique qui la lit a un
+  test où les données rétrécissent. Un test de navigation fixe la vue lui-même
+  (`app.chart_view.set(...)`).
 - `watchlist.txt` porte aussi les positions (`SYMBOLE QTÉ PRU`) : toute écriture
   passe par `watchlist_file::save`, qui conserve les commentaires de Cyril.
 - Tester l'app réelle sans toucher à sa watchlist : `XDG_CONFIG_HOME=<dossier
-  temporaire> cargo run`.
+temporaire> cargo run`.
 - Les heures du graphique sont celles de la place (`OHLCData::local_time`), pas UTC
   ni l'heure locale de la machine.
 - `logs/` est relatif au répertoire de lancement et ignoré par git ; `RUST_LOG`
