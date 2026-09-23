@@ -14,11 +14,12 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
     Frame,
 };
 
 use crate::app::{App, Screen, REFRESH_EVERY};
+use crate::models::WatchlistItem;
 use crate::ui::chart::render_chart_screen;
 
 /// Dessine l'écran courant
@@ -88,6 +89,77 @@ fn truncate_with_ellipsis(text: &str, max_len: usize) -> String {
     }
 }
 
+/// Colonnes possibles de la watchlist
+///
+/// CONCEPT : Responsive — on garde les colonnes par ordre de priorité tant
+/// qu'elles tiennent, puis on les affiche dans l'ordre naturel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Column {
+    Symbol,
+    Name,
+    Price,
+    Change,
+}
+
+impl Column {
+    /// Colonnes par ordre de priorité (la première est toujours affichée)
+    const PRIORITY: [Column; 4] = [Column::Symbol, Column::Price, Column::Change, Column::Name];
+
+    fn width(self) -> u16 {
+        match self {
+            Column::Symbol | Column::Change => 10,
+            Column::Name => 20,
+            Column::Price => 16,
+        }
+    }
+
+    fn header(self) -> &'static str {
+        match self {
+            Column::Symbol => "Symbole",
+            Column::Name => "Nom",
+            Column::Price => "Prix",
+            Column::Change => "Jour",
+        }
+    }
+
+    fn right_aligned(self) -> bool {
+        matches!(self, Column::Price | Column::Change)
+    }
+
+    /// Contenu de la cellule pour un item
+    fn text(self, item: &WatchlistItem, loading: bool) -> String {
+        match self {
+            Column::Symbol => item.symbol.clone(),
+            Column::Name => truncate_with_ellipsis(&item.name, usize::from(self.width())),
+            Column::Price => item.current_price().map_or_else(
+                // Pas encore de prix : en cours de chargement, ou échec (voir barre d'état)
+                || if loading { "…" } else { "N/A" }.to_string(),
+                |price| item.format_price(price),
+            ),
+            Column::Change => item.change_percent().map_or_else(String::new, |c| {
+                let arrow = if c >= 0.0 { "▲" } else { "▼" };
+                format!("{arrow} {c:+.2}%")
+            }),
+        }
+    }
+}
+
+/// Colonnes qui tiennent dans `width`, dans l'ordre d'affichage
+fn columns_for(width: u16) -> Vec<Column> {
+    let mut used = 0u16;
+    let mut columns = Vec::new();
+    for column in Column::PRIORITY {
+        // +1 : espacement entre colonnes
+        let needed = column.width() + 1;
+        if columns.is_empty() || used + needed <= width {
+            used += needed;
+            columns.push(column);
+        }
+    }
+    columns.sort();
+    columns
+}
+
 /// Watchlist : une ligne par ticker, verte ou rouge selon la variation du jour
 fn render_watchlist(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
@@ -109,42 +181,59 @@ fn render_watchlist(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = app
-        .watchlist
-        .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let name = truncate_with_ellipsis(&item.name, 20);
-            let (price, change, color) = if let Some(price) = item.current_price() {
-                let change = item.change_percent().map_or_else(String::new, |c| {
-                    let arrow = if c >= 0.0 { "▲" } else { "▼" };
-                    format!("{arrow} {c:+.2}%")
-                });
-                let color = if item.is_positive() {
-                    Color::Green
-                } else {
-                    Color::Red
-                };
-                (item.format_price(price), change, color)
-            } else {
-                // Pas encore de prix : en cours de chargement, ou échec (voir barre d'état)
-                let placeholder = if app.is_loading() { "…" } else { "N/A" };
-                (placeholder.to_string(), String::new(), Color::Gray)
-            };
-            let line = format!(
-                " {:<10} {:<20} {:>16}  {}",
-                item.symbol, name, price, change
-            );
-
-            let mut style = Style::default().fg(color);
-            if index == app.selected_index {
-                style = style.add_modifier(Modifier::BOLD | Modifier::REVERSED);
-            }
-            ListItem::new(line).style(style)
+    let columns = columns_for(block.inner(area).width);
+    let cell = |column: Column, text: String| {
+        let line = Line::from(text);
+        Cell::from(if column.right_aligned() {
+            line.alignment(Alignment::Right)
+        } else {
+            line
         })
-        .collect();
+    };
 
-    frame.render_widget(List::new(items).block(block), area);
+    let header = Row::new(
+        columns
+            .iter()
+            .map(|&c| cell(c, c.header().to_string()))
+            .collect::<Vec<_>>(),
+    )
+    .style(
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let rows = app.watchlist.iter().map(|item| {
+        let color = match item.current_price() {
+            None => Color::Gray,
+            Some(_) if item.is_positive() => Color::Green,
+            Some(_) => Color::Red,
+        };
+        Row::new(
+            columns
+                .iter()
+                .map(|&c| cell(c, c.text(item, app.is_loading())))
+                .collect::<Vec<_>>(),
+        )
+        .style(Style::default().fg(color))
+    });
+
+    let widths: Vec<Constraint> = columns
+        .iter()
+        .map(|c| Constraint::Length(c.width()))
+        .collect();
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(block)
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED));
+
+    // Décalage conservé entre deux images : ratatui ne fait défiler que si la
+    // sélection sort de la vue (voir App::list_offset)
+    let mut state = TableState::default()
+        .with_offset(app.list_offset.get())
+        .with_selected(Some(app.selected_index));
+    frame.render_stateful_widget(table, area, &mut state);
+    app.list_offset.set(state.offset());
 }
 
 /// Ligne d'état commune au dashboard et au graphique
@@ -310,5 +399,44 @@ mod tests {
             text.contains("N/A"),
             "TSLA sans données ni chargement : {text}"
         );
+    }
+
+    fn screen_sized(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render(f, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.get(x, y).symbol().to_string())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect()
+    }
+
+    fn many(n: usize) -> App {
+        let symbols = (0..n).map(|i| format!("T{i:02}")).collect();
+        App::new(symbols, None, Instant::now())
+    }
+
+    #[test]
+    fn selection_stays_visible_when_scrolling() {
+        // Revue : au-delà de la hauteur de l'écran, la sélection sortait de la vue
+        let mut app = many(40);
+        app.selected_index = 30;
+        let text = screen_sized(&app, 80, 16);
+        assert!(text.contains("T30"), "{text}");
+    }
+
+    #[test]
+    fn scrolling_up_keeps_offset() {
+        let mut app = many(40);
+        app.selected_index = 30;
+        screen_sized(&app, 80, 16);
+        app.selected_index = 25;
+        let text = screen_sized(&app, 80, 16);
+        // La vue ne saute pas : T30 reste visible en remontant de quelques lignes
+        assert!(text.contains("T25") && text.contains("T30"), "{text}");
     }
 }

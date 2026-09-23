@@ -13,6 +13,7 @@
 // L'état reste ainsi testable sans réseau ni thread.
 // ============================================================================
 
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -93,6 +94,16 @@ pub struct App {
     /// Fichier de la watchlist (None dans les tests : rien n'est écrit)
     pub watchlist_path: Option<PathBuf>,
 
+    /// Première ligne visible de la watchlist
+    ///
+    /// CONCEPT RUST : Cell (mutabilité intérieure)
+    /// - Le rendu ne reçoit que `&App`, mais c'est lui qui sait combien de lignes
+    ///   tiennent à l'écran : il lit le décalage, ratatui l'ajuste pour garder la
+    ///   sélection visible, et le rendu le réécrit
+    /// - `Cell<usize>` permet de modifier une valeur Copy à travers une référence
+    ///   partagée, sans emprunt mutable
+    pub list_offset: Cell<usize>,
+
     /// Dernier rafraîchissement (automatique ou manuel)
     last_refresh: Instant,
 }
@@ -112,6 +123,7 @@ impl App {
             status: None,
             input_buffer: String::new(),
             watchlist_path,
+            list_offset: Cell::new(0),
             last_refresh: now,
         }
     }
