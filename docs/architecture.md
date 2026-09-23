@@ -1,6 +1,6 @@
 # Architecture de LazyWallet
 
-> Décrit le code de la branche `review-fixes` (2026-09-23).
+> Décrit le code de la branche `features/wallet-and-chart-nav` (2026-09-23).
 > Les évolutions envisagées sont dans la Roadmap du README, pas ici.
 
 ## Vue d'ensemble
@@ -31,15 +31,17 @@ src/
 ├── lib.rs             # expose les modules (tests, binaire)
 ├── app.rs             # App (état) + transitions qui retournent des AppCommand
 ├── worker.rs          # AppCommand, AppResult, spawn_worker
-├── watchlist_file.rs  # ~/.config/lazywallet/watchlist.txt
+├── watchlist_file.rs  # ~/.config/lazywallet/watchlist.txt (symboles + positions)
+├── portfolio.rs       # totaux du portefeuille par devise
 ├── api/yahoo.rs       # http_client, fetch_ticker_data, parse (testé sur JSON)
 ├── models/
 │   ├── ohlc.rs            # Interval, OHLC, OHLCData (utc_offset, séances)
-│   └── watchlist_item.rs  # WatchlistItem, Quote, FetchedTicker
+│   └── watchlist_item.rs  # WatchlistItem, Quote, Position, FetchedTicker
 └── ui/
     ├── events.rs      # EventHandler (poll 250 ms) + handle_key
-    ├── dashboard.rs   # routage par écran, watchlist, status_line, saisie
-    └── chart/         # écran graphique + widget (voir chart-rendering.md)
+    ├── dashboard.rs   # routage par écran, tableau, totaux, status_line, saisie
+    ├── sparkline.rs   # mini-courbe de tendance par ligne
+    └── chart/         # écran graphique, widget, volume, MA (voir chart-rendering.md)
 ```
 
 ### `main.rs`
@@ -61,8 +63,19 @@ src/
 `App` porte tout l'état : `watchlist`, `selected_index`, `current_screen`
 (`Dashboard | ChartView | InputMode`), `current_interval` (commun à tous les
 tickers), `confirm_quit` / `confirm_delete`, `pending` (commandes en vol),
-`status` (message info/erreur, expire après `STATUS_TTL` = 5 s), `input_buffer`,
-`watchlist_path`.
+`status` (message info/erreur, expire après `STATUS_TTL` = 5 s), `input_buffer` +
+`input_kind` (`AddTicker` ou `Position(symbole)`), `watchlist_path`, et l'état du
+graphique : `chart_offset` (chandelles masquées à droite), `cursor` (index
+absolu), `show_moving_averages`.
+
+**Retour d'information du rendu (`Cell`)** : le rendu ne reçoit que `&App`, mais
+c'est lui qui connaît la place disponible. Deux champs `Cell` lui permettent de
+la reporter :
+
+- `list_offset` : première ligne visible du tableau, relue et réécrite à chaque
+  image, pour que la sélection reste visible sans que la vue saute ;
+- `chart_view` : chandelles visibles (`first..end`) au dernier rendu, utilisées
+  par `move_cursor` et `scroll_chart` pour savoir quand faire défiler.
 
 Les transitions qui ont besoin du réseau **retournent** des `AppCommand` au lieu
 de les envoyer : `initial_commands`, `refresh_commands`, `tick`, `open_chart`,
@@ -74,8 +87,18 @@ de les envoyer : `initial_commands`, `refresh_commands`, `tick`, `open_chart`,
   `current_interval`.
 - Refresh automatique toutes les `REFRESH_EVERY` (60 s), seulement si rien n'est
   en vol ; `r` force un refresh.
-- Ajout et suppression réécrivent `watchlist.txt` ; une erreur d'écriture va dans
-  la barre d'état.
+- Ajout, suppression et `set_position` réécrivent `watchlist.txt` (commentaires
+  conservés) ; une erreur d'écriture va dans la barre d'état.
+- `move_cursor`, `scroll_chart` et `reset_chart_view` pilotent la navigation.
+  Changer d'intervalle ou ouvrir un graphique la remet au présent.
+
+### Portefeuille
+
+Une ligne de `watchlist.txt` = `SYMBOLE [QUANTITÉ PRIX_DE_REVIENT] [# commentaire]`.
+Une position invalide fait échouer le chargement avec le numéro de ligne.
+`WatchlistItem` calcule `market_value`, `unrealized_pnl(_percent)` et `day_pnl`,
+tous en `Option` (None sans position ou sans cours). `portfolio::totals` les
+additionne **par devise**, sans conversion ; un item sans cours est ignoré.
 
 ### `ui/events.rs`
 

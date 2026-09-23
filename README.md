@@ -5,8 +5,10 @@ A fast, lightweight Terminal User Interface (TUI) for tracking cryptocurrency an
 ## ✨ Features
 
 - **Market Data**: Prices and OHLC history from the Yahoo Finance chart API, refreshed every 60 s (or on `r`)
-- **Persistent Watchlist**: Stocks, ETFs, crypto, forex and indices, with the change since the previous session close
+- **Persistent Watchlist**: Stocks, ETFs, crypto, forex and indices, with the change since the previous session close, a trend sparkline and a market open/closed dot
+- **Portfolio**: Positions (quantity, unit cost) with value, unrealized P&L and day P&L, totalled per currency
 - **Responsive Candlestick Charts**: Unicode charts that use the whole terminal — a wider window shows more history
+- **Chart Tools**: Cursor with OHLC and volume, scrolling back in history, volume pane, MA20/MA50 overlays
 - **Multiple Timeframes**: Switch between 5m, 15m, 30m, 1h, 4h, 1d, and 1w intervals
 - **Vim-inspired Navigation**: Efficient keyboard shortcuts for power users
 - **Safe Operations**: Two-step confirmation for quit and delete actions
@@ -38,7 +40,17 @@ cargo run
 ./target/release/lazywallet
 ```
 
-The UI appears immediately and prices fill in as they arrive. The watchlist is stored in `~/.config/lazywallet/watchlist.txt` (one symbol per line, editable by hand); on first run it contains `AAPL`, `TSLA` and `BTC-USD`.
+The UI appears immediately and prices fill in as they arrive. The watchlist is stored in `~/.config/lazywallet/watchlist.txt`; on first run it contains `AAPL`, `TSLA` and `BTC-USD`. It is plain text and can be edited by hand:
+
+```
+# One symbol per line, optionally followed by a position: quantity and unit cost
+AAPL 10 150.25     # comments are kept when LazyWallet rewrites the file
+BTC-USD 0.05 62000
+TSLA               # watch only
+^GSPC
+```
+
+Portfolio totals are shown per currency in the header (no FX conversion).
 
 ### Keyboard Shortcuts
 
@@ -51,6 +63,7 @@ The UI appears immediately and prices fill in as they arrive. The watchlist is s
 | `↑` / `k` | Navigate up in the list |
 | `↓` / `j` | Navigate down in the list |
 | `Enter` | Open candlestick chart for selected ticker |
+| `p` | Edit the position of the selected ticker (`quantity unit_cost`, empty = none) |
 | `r` | Refresh all prices |
 | `q` | Quit application (requires confirmation) |
 | `Ctrl+C` | Quit immediately (any screen) |
@@ -61,11 +74,16 @@ The UI appears immediately and prices fill in as they arrive. The watchlist is s
 |-----|--------|
 | `h` | Switch to previous interval (cycle: 5m → 15m → 30m → 1h → 4h → 1d → 1w) |
 | `l` | Switch to next interval |
-| `ESC` / `Space` | Return to dashboard |
+| `←` / `→` | Move the cursor (shows date, OHLC, volume; scrolls at the edges) |
+| `PgUp` / `PgDn` | Scroll half a page back / forward in time |
+| `End` | Back to the latest candles, cursor off |
+| `m` | Show / hide MA20 and MA50 |
+| `ESC` | Hide the cursor, then return to dashboard |
+| `Space` | Return to dashboard |
 | `r` | Refresh |
 | `q` | Quit application (requires confirmation) |
 
-#### Input Mode (Adding Ticker)
+#### Input Mode (Adding a Ticker or Editing a Position)
 
 | Key | Action |
 |-----|--------|
@@ -73,7 +91,7 @@ The UI appears immediately and prices fill in as they arrive. The watchlist is s
 | `ESC` | Cancel input |
 | `Backspace` | Delete last character |
 
-Accepted characters: letters, digits, `-`, `.`, `=` and `^` (typed letters are upper-cased).
+Tickers accept letters, digits, `-`, `.`, `=` and `^` (typed letters are upper-cased); positions accept digits, `.`, `,` and spaces.
 
 ### Supported Tickers
 
@@ -123,14 +141,16 @@ src/
 ├── api/yahoo.rs          # Yahoo Finance client (shared, 10 s timeout)
 ├── models/
 │   ├── ohlc.rs           # Interval, OHLC candles, exchange sessions
-│   └── watchlist_item.rs # Watchlist item, quote, fetched data
+│   └── watchlist_item.rs # Watchlist item, quote, position, P&L
 ├── ui/
-│   ├── dashboard.rs      # Watchlist, status bar, input line
+│   ├── dashboard.rs      # Watchlist table, portfolio totals, status bar, input line
 │   ├── events.rs         # Key handling, routed by screen
-│   └── chart/            # Candlestick widget, price and time axes
+│   ├── sparkline.rs      # Per-row trend sparkline
+│   └── chart/            # Candlestick widget, axes, volume, moving averages
 ├── app.rs                # Application state
 ├── worker.rs             # Network thread (commands → results)
-├── watchlist_file.rs     # Watchlist persistence
+├── watchlist_file.rs     # Watchlist + positions persistence
+├── portfolio.rs          # Per-currency totals
 ├── lib.rs
 └── main.rs               # Terminal setup and event loop
 ```
@@ -208,9 +228,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - [ ] Customizable color themes
 - [ ] Price alerts and notifications
-- [ ] Portfolio tracking with cost basis
 - [ ] Export data to CSV
-- [ ] Technical indicators (SMA, EMA, RSI, etc.)
+- [ ] More technical indicators (EMA, RSI, Bollinger bands)
 - [ ] Multiple watchlist support
 - [ ] Search/filter functionality
 

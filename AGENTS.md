@@ -41,8 +41,15 @@ et `cargo fmt --check` passent.
 - `handle_key` route d'abord par écran : en `InputMode`, toute touche va à la
   saisie. Un nouveau raccourci se place dans la branche de son écran.
 - `CandleChart` ne dessine que dans le `Rect` reçu ; l'écran lui passe
-  `block.inner(area)`. Toute couche du graphique réutilise les colonnes de
-  `visible_columns`.
+  `block.inner(area)`. Toute couche du graphique (chandelles, volume, moyennes,
+  curseur) réutilise les colonnes de `visible_columns`.
+- Le rendu reporte ce qu'il a affiché via deux `Cell` de `App` (`list_offset`,
+  `chart_view`) ; la logique de navigation lit la valeur du **rendu précédent**.
+  Un test de navigation doit la fixer lui-même (`app.chart_view.set(...)`).
+- `watchlist.txt` porte aussi les positions (`SYMBOLE QTÉ PRU`) : toute écriture
+  passe par `watchlist_file::save`, qui conserve les commentaires de Cyril.
+- Tester l'app réelle sans toucher à sa watchlist : `XDG_CONFIG_HOME=<dossier
+  temporaire> cargo run`.
 - Les heures du graphique sont celles de la place (`OHLCData::local_time`), pas UTC
   ni l'heure locale de la machine.
 - `logs/` est relatif au répertoire de lancement et ignoré par git ; `RUST_LOG`

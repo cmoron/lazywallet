@@ -94,9 +94,40 @@ deux jeux de caractères selon la densité :
 hauteur fractionnaire ; une série plate est élargie de ±1 % pour éviter une
 division par zéro.
 
+## Fenêtre et curseur
+
+`CandleChart::new(data, décimales)` se configure par builder :
+
+- `.window(end)` : n'affiche que `candles[..end]`. L'écran passe
+  `len − app.chart_offset` ; `visible_columns` garde ensuite les plus récentes
+  de cette fenêtre, collées à l'axe comme d'habitude.
+- `.cursor(Some(i))` : trace `┆` dans les cases vides de la colonne de la
+  chandelle `i` si elle est visible. L'en-tête de l'écran affiche date, OHLC et
+  volume.
+- `.report_view(&cell)` : écrit la plage visible `first..end` dans
+  `App::chart_view`, que la navigation clavier utilise au tour suivant.
+
+## Volume
+
+Trois lignes (`VOLUME_ROWS`) prises en bas du graphique quand il fait au moins
+14 lignes et que la fenêtre contient du volume (le forex n'en a pas). Chaque
+barre est mesurée en huitièmes de cellule (`▁…█`), dans la couleur de sa
+chandelle atténuée ; le volume maximal visible s'affiche sur l'axe.
+
+## Moyennes mobiles
+
+MA20 (jaune) et MA50 (magenta), moyennes simples des clôtures, calculées sur
+toutes les chandelles jusqu'à la fin de la fenêtre : elles sont justes dès le bord
+gauche. Aucune valeur tant que la période n'est pas complète. Dessinées en `•`
+dans les cases qui ne sont pas un corps de chandelle ; en vue espacée, la colonne
+vide entre deux chandelles reçoit le point milieu. L'échelle des prix n'est **pas**
+élargie pour elles, sinon une MA50 lointaine écraserait les chandelles : un point
+hors de la plage n'est pas dessiné.
+
 ## Tests
 
 - `geometry.rs`, `price_axis.rs`, `time_axis.rs` : fonctions pures.
 - `widget.rs` : rendu dans un `Buffer` nu, puis lecture des cellules (largeur
   exacte, dernière chandelle contre l'axe, petites tailles, prix plat).
-- `chart/mod.rs` : écran complet via `TestBackend`.
+- `indicators.rs` : `sma`.
+- `chart/mod.rs` : écran complet via `TestBackend` (titre, en-tête du curseur, état du marché).
